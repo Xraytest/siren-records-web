@@ -25,7 +25,7 @@ export function Library() {
       <div className="login-gate">
         <span className="kicker">ACCESS DENIED / 需要身份</span>
         <h1>歌单是账号资产</h1>
-        <p>建立一份本地档案即可创建、排序、发布歌单，并导出为可携带的文件。</p>
+        <p>建立一份船员档案即可创建、排序、发布歌单，并导出为可携带的文件。</p>
         <div className="hero-actions">
           <button className="btn btn--primary" onClick={() => openAuth('register')}>
             建立账号
@@ -38,14 +38,15 @@ export function Library() {
     )
   }
 
-  const submit = () => {
+  const submit = async () => {
     const trimmed = name.trim()
     if (!trimmed) return
-    const playlist = create({
+    const playlist = await create({
       name: trimmed,
       description: desc.trim(),
       tags: tags.split(/[,，\s]+/).map((t) => t.trim()).filter(Boolean).slice(0, 5),
     })
+    if (!playlist) return
     setCreating(false)
     setName('')
     setDesc('')
@@ -58,7 +59,7 @@ export function Library() {
     try {
       const list = parseImport(await file.text())
       if (!list.length) throw new Error('empty')
-      const n = importMany(list)
+      const n = await importMany(list)
       toast(`已导入 ${n} 张歌单`, 'ok')
     } catch {
       toast('文件无法识别，需要包含 songs 列表的 JSON', 'warn')
@@ -145,10 +146,9 @@ export function Library() {
                 <button
                   className="icon-btn icon-btn--sm"
                   title="删除"
-                  onClick={() => {
+                  onClick={async () => {
                     if (confirm(`删除《${p.name}》？此操作不可撤销。`)) {
-                      remove(p.id)
-                      toast('歌单已删除', 'ok')
+                      if (await remove(p.id)) toast('歌单已删除', 'ok')
                     }
                   }}
                 >

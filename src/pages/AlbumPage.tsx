@@ -29,15 +29,16 @@ export function AlbumPage() {
 
   const trackList = songs as NonNullable<typeof songs[number]>[]
 
-  const collect = () => {
+  const collect = async () => {
     if (!user) return openAuth('register')
-    const playlist = create({
+    const playlist = await create({
       name: album.name,
       description: `自《${album.name}》收录的整张专辑。`,
       songs: album.songs.map((s) => s.cid),
       coverSongCid: album.songs[0]?.cid ?? null,
       tags: ['整张专辑'],
     })
+    if (!playlist) return
     toast(`已建歌单《${playlist.name}》`, 'ok')
     navigate(`/playlist/${playlist.id}`)
   }

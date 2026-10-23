@@ -101,7 +101,7 @@ export function AuthDialog({ mode, onClose, onMode }: Props) {
           {busy ? '处理中…' : isRegister ? '建立档案' : '登录'}
         </button>
         <p className="hint hint--xs">
-          账号与歌单保存在本机浏览器（IndexedDB / localStorage），密码以 PBKDF2-SHA256 加盐哈希保存，不上传任何服务器。
+          账号与歌单保存在服务端，密码以 scrypt 加盐哈希存储，登录状态保留 30 天。
         </p>
       </form>
     </Modal>

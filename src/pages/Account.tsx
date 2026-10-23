@@ -24,8 +24,7 @@ export function Account() {
           <span className="kicker">ACCOUNT / 04</span>
           <h1>为这张唱片建立一份身份</h1>
           <p>
-            账号只存在于这台设备的浏览器中。它负责把你的歌单、收藏与发布记录归拢在一起，
-            并以 PBKDF2 加盐哈希保护密码。没有服务器，也不会上传任何东西。
+            账号、密码与歌单都保存在服务器上，换设备登录即可取回。密码以 scrypt 加盐哈希存储，从不保存明文。
           </p>
           <div className="hero-actions">
             <button className="btn btn--primary" onClick={() => openAuth('register')}>
@@ -38,15 +37,15 @@ export function Account() {
           <div className="account-facts">
             <div>
               <strong className="mono">{String(userCount).padStart(2, '0')}</strong>
-              <span>本机已注册档案</span>
+              <span>服务器已注册档案</span>
             </div>
             <div>
-              <strong className="mono">PBKDF2</strong>
-              <span>160,000 轮加盐哈希</span>
+              <strong className="mono">SCRYPT</strong>
+              <span>加盐密钥派生</span>
             </div>
             <div>
-              <strong className="mono">LOCAL</strong>
-              <span>数据不出浏览器</span>
+              <strong className="mono">SERVER</strong>
+              <span>数据存于服务端</span>
             </div>
           </div>
         </div>
@@ -73,12 +72,16 @@ export function Account() {
     setEditing(true)
   }
 
-  const saveProfile = () => {
+  const saveProfile = async () => {
     if (name.trim().length < 2) {
       toast('代号至少 2 个字符', 'warn')
       return
     }
-    updateProfile({ name: name.trim(), bio: bio.trim() })
+    const result = await updateProfile({ name: name.trim(), bio: bio.trim() })
+    if (!result.ok) {
+      toast(result.error || '资料更新失败', 'warn')
+      return
+    }
     setEditing(false)
     toast('档案已更新', 'ok')
   }
@@ -102,7 +105,7 @@ export function Account() {
       const source = Array.isArray(raw.playlists) ? JSON.stringify(raw.playlists) : text
       const list = parseImport(source)
       if (!list.length) throw new Error('empty')
-      const n = importMany(list)
+      const n = await importMany(list)
       toast(`已导入 ${n} 张歌单`, 'ok')
     } catch {
       toast('无法识别该备份文件', 'warn')
@@ -123,7 +126,7 @@ export function Account() {
           <div className="album-meta">
             <span className="mono">@{user.handle}</span>
             <span className="mono">ENLISTED {formatDate(user.createdAt)}</span>
-            <span className="mono">LOCAL PROFILE</span>
+            <span className="mono">SERVER PROFILE</span>
           </div>
           <div className="hero-actions">
             <button className="btn btn--sm" onClick={startEdit}>
@@ -135,7 +138,13 @@ export function Account() {
             <button className="btn btn--sm" onClick={() => fileRef.current?.click()}>
               <IconUpload size={13} /> 导入歌单
             </button>
-            <button className="btn btn--sm btn--ghost" onClick={() => { logout(); toast('已断开连接', 'info') }}>
+            <button
+              className="btn btn--sm btn--ghost"
+              onClick={async () => {
+                await logout()
+                toast('已断开连接', 'info')
+              }}
+            >
               <IconLogout size={13} /> 退出
             </button>
             <input
@@ -200,11 +209,11 @@ export function Account() {
           <div>
             <strong>关于这套账号系统</strong>
             <p>
-              这是一个纯静态站点：账号、歌单与广场索引全部保存在浏览器 localStorage 中，换设备或清理站点数据会丢失。
-              请用「备份全部」导出 JSON 留存；密码只保存加盐哈希，不保存明文。
+              账号、密码、歌单与广场条目都保存在服务端（SQLite），登录状态由 30 天有效的会话令牌维持。
+              换设备或多浏览器登录都能取回同一份数据；「备份全部」仍可导出 JSON 作为离线留存。
             </p>
           </div>
-          <span className="mono">NO BACKEND</span>
+          <span className="mono">SERVER / SQLITE</span>
         </div>
       </section>
 

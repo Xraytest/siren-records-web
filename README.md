@@ -9,25 +9,27 @@
 - **曲库档案**：298 张专辑、911 首曲目，支持检索、排序、网格 / 列表视图、随机播放。
 - **播放器**：队列、随机、循环（列表 / 单曲）、进度与音量、频谱可视化、LRC 歌词逐行同步、Media Session。
 - **歌单**：创建、重命名、描述与标签、曲目增删与上下排序、整张专辑一键收录。
-- **分享**：歌单完整数据经 LZ-String 压缩后写入链接（`#/share/<code>`），无需服务器即可跨设备传递；也支持复制分享码。
+- **分享**：歌单完整数据经 LZ-String 压缩后写入链接（`#/share/<code>`），无需登录即可跨设备传递；也支持复制分享码。
 - **发布**：生成只读快照进入「公开广场」，可更新或撤下。
 - **导出 / 导入**：单张歌单或全部歌单导出为 JSON（含完整曲目信息），支持文件导入、分享码导入与账号备份恢复。
-- **账号系统**：本地注册 / 登录，PBKDF2-SHA256（160,000 轮加盐）保存密码哈希，歌单按账号隔离。
+- **账号系统**：服务端注册 / 登录，密码以 scrypt（随机盐 + 64 字节派生）哈希保存，歌单与广场数据存于 SQLite，换设备登录即可取回。
 
 ## 技术栈
 
-Vite + React 19 + TypeScript，HashRouter（适配 GitHub Pages 任意子路径），无后端。
+前端 Vite + React 19 + TypeScript，HashRouter（适配任意子路径）。
 
-账号、歌单与广场索引保存在浏览器 `localStorage`；浏览器清理站点数据会导致丢失，请用「备份全部」导出 JSON。
+后端为单文件 Node 服务 `server/server.mjs`：内置 `node:http` + `node:sqlite`，无第三方依赖，同时托管 `dist/` 静态文件与 `/api/*` 接口。会话令牌有效期 30 天，存于 `localStorage` 的 `siren:token`。
 
 ## 本地运行
 
 ```bash
 npm install
-npm run dev          # http://localhost:5173
+npm run server       # 后端 http://localhost:8090（含静态托管）
+npm run dev          # 前端 http://localhost:5173，/api 自动代理到 8090
 npm run build        # 输出 dist/
-npm run preview
 ```
+
+本地数据默认写入项目下的 `data/siren.db`（已 gitignore），可用 `DATA_DIR` 环境变量改路径。
 
 ## 曲库快照
 
@@ -43,7 +45,19 @@ MSR_PROXY=socks5h://127.0.0.1:10808 node scripts/fetch-catalog.mjs
 
 ## 部署
 
-`vite.config.ts` 使用 `base: './'`，`dist/` 可直接放到 GitHub Pages、任意静态服务器或子路径下。
+`vite.config.ts` 使用 `base: './'`，`dist/` 可放在任意静态服务器或子路径下；但由于账号与歌单依赖 `/api`，需与 `server/server.mjs` 同域部署（或反向代理 `/api`）。
+
+示例（Docker，静态文件与数据库分别挂载）：
+
+```bash
+docker run -d --name siren-web --restart unless-stopped \
+  -p 8090:8090 -e PORT=8090 \
+  -e DIST_DIR=/app/dist -e DATA_DIR=/app/data \
+  -v /path/to/dist:/app/dist:ro \
+  -v /path/to/data:/app/data \
+  -v /path/to/server:/app/server:ro \
+  node:24-alpine node /app/server/server.mjs
+```
 
 ## 声明
 

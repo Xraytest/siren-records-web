@@ -40,16 +40,18 @@ export function SharePage() {
     )
   }
 
-  const save = () => {
+  const save = async () => {
     if (!user) return openAuth('register')
-    const playlist = saveShared(payload)
+    const playlist = await saveShared(payload)
+    if (!playlist) return
     toast(`已保存《${playlist.name}》到歌单`, 'ok')
     navigate(`/playlist/${playlist.id}`)
   }
 
-  const forkAndEdit = () => {
+  const forkAndEdit = async () => {
     if (!user) return openAuth('register')
-    const playlist = saveShared(payload)
+    const playlist = await saveShared(payload)
+    if (!playlist) return
     navigate(`/playlist/${playlist.id}`)
   }
 

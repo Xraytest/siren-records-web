@@ -20,16 +20,18 @@ export function AddToPlaylist({ song, onClose }: Props) {
 
   if (!song) return null
 
-  const add = (id: string, label: string) => {
-    const added = addSongs(id, [song.cid])
+  const add = async (id: string, label: string) => {
+    const added = await addSongs(id, [song.cid])
+    if (added === null) return
     toast(added ? `已加入《${label}》` : `《${label}》中已存在该曲目`, added ? 'ok' : 'info')
     onClose()
   }
 
-  const submitNew = () => {
+  const submitNew = async () => {
     const trimmed = name.trim()
     if (!trimmed) return
-    const playlist = create({ name: trimmed, songs: [song.cid], coverSongCid: song.cid })
+    const playlist = await create({ name: trimmed, songs: [song.cid], coverSongCid: song.cid })
+    if (!playlist) return
     toast(`已创建《${playlist.name}》并加入`, 'ok')
     onClose()
   }
@@ -63,9 +65,9 @@ export function AddToPlaylist({ song, onClose }: Props) {
                 value={name}
                 placeholder="歌单名称"
                 onChange={(e) => setName(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && submitNew()}
+                onKeyDown={(e) => e.key === 'Enter' && void submitNew()}
               />
-              <button className="btn btn--primary" onClick={submitNew}>
+              <button className="btn btn--primary" onClick={() => void submitNew()}>
                 创建
               </button>
             </div>
@@ -73,7 +75,7 @@ export function AddToPlaylist({ song, onClose }: Props) {
           <div className="pick-list">
             {playlists.length === 0 && <p className="hint">还没有歌单，先新建一个。</p>}
             {playlists.map((p) => (
-              <button key={p.id} className="pick-row" onClick={() => add(p.id, p.name)}>
+              <button key={p.id} className="pick-row" onClick={() => void add(p.id, p.name)}>
                 <span className="pick-cover">
                   {p.coverSongCid ? (
                     <img src={song.albumCover} alt="" />

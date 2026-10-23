@@ -42,14 +42,7 @@ export interface User {
   name: string
   handle: string
   bio: string
-  salt: string
-  hash: string
   createdAt: number
-}
-
-export interface Session {
-  userId: string
-  since: number
 }
 
 export interface Playlist {

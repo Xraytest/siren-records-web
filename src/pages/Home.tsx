@@ -26,7 +26,7 @@ export function Home() {
     if (songs.length) playQueue(songs, 0, feature.name)
   }
 
-  const quickPlaylist = () => {
+  const quickPlaylist = async () => {
     if (!user) {
       navigate('/account')
       return
@@ -36,7 +36,8 @@ export function Home() {
     const unique = Array.from(new Map(picks.map((s) => [s.cid, s])).values())
     const date = new Date()
     const name = `漂流采样 ${String(date.getMonth() + 1).padStart(2, '0')}/${String(date.getDate()).padStart(2, '0')}`
-    const playlist = create({ name, description: '从曲库随机抽取的八首曲子，密封于此刻。', songs: unique.map((s) => s.cid), tags: ['随机', '采样'] })
+    const playlist = await create({ name, description: '从曲库随机抽取的八首曲子，密封于此刻。', songs: unique.map((s) => s.cid), tags: ['随机', '采样'] })
+    if (!playlist) return
     navigate(`/playlist/${playlist.id}`)
   }
 

@@ -54,8 +54,8 @@ export function PlaylistPage() {
     setEditing(true)
   }
 
-  const saveEdit = () => {
-    update(playlist.id, {
+  const saveEdit = async () => {
+    await update(playlist.id, {
       name: form.name.trim() || '未命名歌单',
       description: form.description.trim(),
       tags: form.tags.split(/[,，\s]+/).map((t) => t.trim()).filter(Boolean).slice(0, 6),
@@ -64,8 +64,8 @@ export function PlaylistPage() {
     toast('歌单信息已更新', 'ok')
   }
 
-  const doPublish = () => {
-    const entry = publish(playlist.id)
+  const doPublish = async () => {
+    const entry = await publish(playlist.id)
     if (entry) {
       toast('已发布到公开广场', 'ok')
       setPublishOpen(false)
@@ -143,10 +143,9 @@ export function PlaylistPage() {
             <button
               className="icon-btn"
               title="删除歌单"
-              onClick={() => {
+              onClick={async () => {
                 if (confirm(`删除《${playlist.name}》？`)) {
-                  remove(playlist.id)
-                  navigate('/library')
+                  if (await remove(playlist.id)) navigate('/library')
                 }
               }}
             >
@@ -168,8 +167,8 @@ export function PlaylistPage() {
           songs={songs}
           label={playlist.name}
           showAlbum
-          onRemove={(cid) => removeSong(playlist.id, cid)}
-          onMove={(i, dir) => moveSong(playlist.id, i, i + dir)}
+          onRemove={(cid) => void removeSong(playlist.id, cid)}
+          onMove={(i, dir) => void moveSong(playlist.id, i, i + dir)}
           empty={
             <span>
               歌单还是空的。<button className="text-link" onClick={() => setPickerOpen(true)}>添加曲目</button>
@@ -256,7 +255,7 @@ export function PlaylistPage() {
               <button
                 className="btn"
                 onClick={() => {
-                  unpublish(playlist.id)
+                  void unpublish(playlist.id)
                   toast('已从广场撤下', 'info')
                   setPublishOpen(false)
                 }}
@@ -297,8 +296,9 @@ export function PlaylistPage() {
         open={pickerOpen}
         onClose={() => setPickerOpen(false)}
         existing={playlist.songs}
-        onAdd={(cids) => {
-          const added = addSongs(playlist.id, cids)
+        onAdd={async (cids) => {
+          const added = await addSongs(playlist.id, cids)
+          if (added === null) return
           toast(added ? `已添加 ${added} 首曲目` : '这些曲目已在歌单中', added ? 'ok' : 'info')
           setPickerOpen(false)
         }}
