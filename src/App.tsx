@@ -8,6 +8,7 @@ import { Home } from './pages/Home'
 import { Library } from './pages/Library'
 import { PlaylistPage } from './pages/PlaylistPage'
 import { SharePage } from './pages/SharePage'
+import { Settings } from './pages/Settings'
 import { AuthProvider } from './state/AuthContext'
 import { PlaylistProvider } from './state/PlaylistContext'
 import { PlayerProvider } from './state/PlayerContext'
@@ -28,6 +29,7 @@ export default function App() {
                 <Route path="explore" element={<Explore />} />
                 <Route path="share/:code" element={<SharePage />} />
                 <Route path="account" element={<Account />} />
+                <Route path="settings" element={<Settings />} />
                 <Route path="*" element={<Home />} />
               </Route>
             </Routes>

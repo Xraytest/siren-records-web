@@ -1,7 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { isInstrumental, useSettings } from './settings'
 import type { Album, Catalog, Song } from './types'
 
-let cache: { catalog: Catalog; albums: Map<string, Album>; songs: Map<string, Song>; all: Song[] } | null = null
+type Built = { catalog: Catalog; albums: Map<string, Album>; songs: Map<string, Song>; all: Song[] }
+
+let cache: Built | null = null
 
 function build(catalog: Catalog) {
   const albums = new Map<string, Album>()
@@ -27,7 +30,7 @@ function build(catalog: Catalog) {
   return { catalog, albums, songs, all }
 }
 
-let pending: Promise<ReturnType<typeof build>> | null = null
+let pending: Promise<Built> | null = null
 
 export function loadCatalog() {
   if (cache) return Promise.resolve(cache)
@@ -45,7 +48,25 @@ export function loadCatalog() {
   return pending
 }
 
-export function useCatalog() {
+/** 屏蔽伴奏时，从档案视图里剔除相关曲目 */
+function withoutInstrumental(base: Built): Built {
+  const songs = new Map([...base.songs].filter(([, song]) => !isInstrumental(song.name)))
+  const albums = new Map(
+    [...base.albums].map(([cid, album]) => [
+      cid,
+      { ...album, songs: album.songs.filter((ref) => !isInstrumental(ref.name)) },
+    ]),
+  )
+  return {
+    catalog: { ...base.catalog, albums: [...albums.values()] },
+    albums,
+    songs,
+    all: base.all.filter((song) => !isInstrumental(song.name)),
+  }
+}
+
+export function useCatalog(): Built | null {
+  const { hideInstrumental } = useSettings()
   const [state, setState] = useState(cache)
   useEffect(() => {
     let alive = true
@@ -56,7 +77,7 @@ export function useCatalog() {
       alive = false
     }
   }, [])
-  return state
+  return useMemo(() => (state && hideInstrumental ? withoutInstrumental(state) : state), [state, hideInstrumental])
 }
 
 export function getSong(cid: string) {
@@ -72,11 +93,12 @@ export async function ensureSong(cid: string) {
   return c.songs.get(cid) ?? null
 }
 
-export function searchAll(keyword: string) {
+export function searchAll(keyword: string, hideInstrumental = false) {
   if (!cache) return { songs: [] as Song[], albums: [] as Album[] }
   const q = keyword.trim().toLowerCase()
   if (!q) return { songs: [], albums: [] }
   const songs = cache.all
+    .filter((s) => !hideInstrumental || !isInstrumental(s.name))
     .filter((s) => s.name.toLowerCase().includes(q) || s.artistes.toLowerCase().includes(q) || s.albumName.toLowerCase().includes(q))
     .slice(0, 24)
   const albums = cache.catalog.albums

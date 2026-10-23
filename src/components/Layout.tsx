@@ -3,7 +3,7 @@ import { Link, NavLink, Outlet, useLocation } from 'react-router-dom'
 import { AuthDialog } from './AuthDialog'
 import { PlayerBar } from './PlayerBar'
 import { SearchPalette } from './SearchPalette'
-import { IconDisc, IconSearch, IconUser } from './Icons'
+import { IconDisc, IconSearch, IconSliders, IconUser } from './Icons'
 import { useAuth } from '../state/AuthContext'
 import { useCatalog } from '../lib/catalog'
 import { useAuthDialog } from '../lib/authDialog'
@@ -75,6 +75,9 @@ export function Layout() {
             <span>搜索曲目</span>
             <kbd>⌘K</kbd>
           </button>
+          <Link to="/settings" className="icon-btn" title="设置" aria-label="设置">
+            <IconSliders size={16} />
+          </Link>
           {user ? (
             <Link to="/account" className="account-chip">
               <span className="avatar">{user.name.slice(0, 1).toUpperCase()}</span>
@@ -119,6 +122,7 @@ export function Layout() {
             </a>
             <Link to="/archive">全部专辑</Link>
             <Link to="/explore">公开歌单</Link>
+            <Link to="/settings">偏好设置</Link>
           </div>
         </div>
       </footer>

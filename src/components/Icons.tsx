@@ -210,6 +210,14 @@ export const IconDisc = (p: IconProps) => (
   </Base>
 )
 
+export const IconSliders = (p: IconProps) => (
+  <Base {...p}>
+    <path d="M4 7h10M18 7h2M4 17h4M12 17h8" />
+    <circle cx="16" cy="7" r="2" />
+    <circle cx="10" cy="17" r="2" />
+  </Base>
+)
+
 export const IconLogo = (p: IconProps) => (
   <Base {...p} strokeWidth="1.2">
     <path d="M3 20 12 3l9 17z" />

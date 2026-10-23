@@ -10,6 +10,7 @@ import {
 } from 'react'
 import { toast } from '../lib/toast'
 import { loadCatalog } from '../lib/catalog'
+import { isInstrumental, useSettings } from '../lib/settings'
 import type { LyricLine, Song } from '../lib/types'
 
 type RepeatMode = 'off' | 'all' | 'one'
@@ -45,6 +46,43 @@ interface PlayerValue {
 
 const PlayerContext = createContext<PlayerValue | null>(null)
 
+/** 播放器偏好与上次播放记录保存在浏览器本地 */
+const STORE_KEY = 'siren:player'
+
+interface StoredPlayer {
+  cids: string[]
+  index: number
+  label: string
+  time: number
+  shuffle: boolean
+  repeat: RepeatMode
+  volume: number
+  muted: boolean
+}
+
+function readStored(): StoredPlayer | null {
+  try {
+    const raw = localStorage.getItem(STORE_KEY)
+    if (!raw) return null
+    const data = JSON.parse(raw) as Partial<StoredPlayer>
+    if (!Array.isArray(data.cids) || !data.cids.length) return null
+    return {
+      cids: data.cids.filter((cid): cid is string => typeof cid === 'string'),
+      index: Number(data.index) || 0,
+      label: typeof data.label === 'string' ? data.label : '',
+      time: Number(data.time) || 0,
+      shuffle: Boolean(data.shuffle),
+      repeat: data.repeat === 'all' || data.repeat === 'one' ? data.repeat : 'off',
+      volume: typeof data.volume === 'number' ? data.volume : 0.8,
+      muted: Boolean(data.muted),
+    }
+  } catch {
+    return null
+  }
+}
+
+const initialPlayer = readStored()
+
 function parseLrc(text: string): LyricLine[] {
   const lines: LyricLine[] = []
   for (const raw of text.split(/\r?\n/)) {
@@ -75,14 +113,19 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(false)
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
-  const [volume, setVolumeState] = useState(0.8)
-  const [muted, setMuted] = useState(false)
-  const [shuffle, setShuffle] = useState(false)
-  const [repeat, setRepeat] = useState<RepeatMode>('off')
+  const [volume, setVolumeState] = useState(initialPlayer?.volume ?? 0.8)
+  const [muted, setMuted] = useState(initialPlayer?.muted ?? false)
+  const [shuffle, setShuffle] = useState(initialPlayer?.shuffle ?? false)
+  const [repeat, setRepeat] = useState<RepeatMode>(initialPlayer?.repeat ?? 'off')
   const [lyrics, setLyrics] = useState<LyricLine[]>([])
   const [lyricLoading, setLyricLoading] = useState(false)
 
   const current = queue[index] ?? null
+  const { hideInstrumental } = useSettings()
+  const pendingSeekRef = useRef<number | null>(initialPlayer?.time ?? null)
+  const restoredRef = useRef(false)
+  const hadQueueRef = useRef(false)
+  const lastSavedRef = useRef(0)
 
   const getAudio = useCallback(() => {
     if (!audioRef.current) {
@@ -117,6 +160,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const playQueue = useCallback(
     (songs: Song[], startIndex = 0, label = '') => {
       if (!songs.length) return
+      pendingSeekRef.current = null
+      hadQueueRef.current = true
       setQueue(songs)
       setIndex(Math.min(Math.max(startIndex, 0), songs.length - 1))
       setContextLabel(label)
@@ -124,6 +169,76 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     },
     [],
   )
+
+  // 还原上次的播放队列与进度（保持暂停，不自动出声）
+  useEffect(() => {
+    if (restoredRef.current || !initialPlayer) return
+    restoredRef.current = true
+    void loadCatalog().then((c) => {
+      const songs = initialPlayer.cids
+        .map((cid) => c.songs.get(cid))
+        .filter((s): s is Song => Boolean(s))
+        .filter((s) => !hideInstrumental || !isInstrumental(s.name))
+      if (!songs.length) return
+      hadQueueRef.current = true
+      setQueue(songs)
+      setIndex(Math.min(Math.max(initialPlayer.index, 0), songs.length - 1))
+      setContextLabel(initialPlayer.label)
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const snapshotRef = useRef({ queue, index, contextLabel, shuffle, repeat, volume, muted, currentTime })
+  snapshotRef.current = { queue, index, contextLabel, shuffle, repeat, volume, muted, currentTime }
+
+  const savePlayerState = useCallback(() => {
+    const s = snapshotRef.current
+    if (!s.queue.length) {
+      // 队列被清空时才删除记录，避免挂载瞬间抹掉待还原的数据
+      if (hadQueueRef.current) {
+        localStorage.removeItem(STORE_KEY)
+        hadQueueRef.current = false
+      }
+      return
+    }
+    hadQueueRef.current = true
+    const data: StoredPlayer = {
+      cids: s.queue.map((song) => song.cid),
+      index: s.index,
+      label: s.contextLabel,
+      time: Math.floor(s.currentTime),
+      shuffle: s.shuffle,
+      repeat: s.repeat,
+      volume: s.volume,
+      muted: s.muted,
+    }
+    try {
+      localStorage.setItem(STORE_KEY, JSON.stringify(data))
+    } catch {
+      // 存储已满或隐私模式下忽略
+    }
+  }, [])
+
+  useEffect(() => {
+    savePlayerState()
+  }, [queue, index, contextLabel, shuffle, repeat, volume, muted, savePlayerState])
+
+  // 播放进度最多每 5 秒写一次，避免频繁写入
+  useEffect(() => {
+    if (Date.now() - lastSavedRef.current < 5000) return
+    lastSavedRef.current = Date.now()
+    savePlayerState()
+  }, [currentTime, savePlayerState])
+
+  useEffect(() => {
+    const flush = () => savePlayerState()
+    window.addEventListener('pagehide', flush)
+    document.addEventListener('visibilitychange', flush)
+    return () => {
+      window.removeEventListener('pagehide', flush)
+      document.removeEventListener('visibilitychange', flush)
+    }
+  }, [savePlayerState])
 
   useEffect(() => {
     const audio = getAudio()
@@ -168,8 +283,18 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     const audio = getAudio()
     const onTime = () => setCurrentTime(audio.currentTime)
     const onMeta = () => {
-      setDuration(Number.isFinite(audio.duration) ? audio.duration : 0)
+      const total = Number.isFinite(audio.duration) ? audio.duration : 0
+      setDuration(total)
       setLoading(false)
+      const resume = pendingSeekRef.current
+      if (resume && total > 0) {
+        pendingSeekRef.current = null
+        // 上次听到的位置：只恢复进度，不自动播放
+        if (resume < total - 2) {
+          audio.currentTime = resume
+          setCurrentTime(resume)
+        }
+      }
     }
     const onWaiting = () => setLoading(true)
     const onPlaying = () => setLoading(false)
@@ -351,16 +476,18 @@ export function usePlayer() {
 
 export function useSongs(cids: string[]): Song[] {
   const [songs, setSongs] = useState<Song[]>([])
+  const { hideInstrumental } = useSettings()
   const key = cids.join(',')
   useEffect(() => {
     let alive = true
     loadCatalog().then((c) => {
       if (!alive) return
-      setSongs(key ? key.split(',').map((cid) => c.songs.get(cid)).filter((s): s is Song => Boolean(s)) : [])
+      const list = key ? key.split(',').map((cid) => c.songs.get(cid)).filter((s): s is Song => Boolean(s)) : []
+      setSongs(hideInstrumental ? list.filter((s) => !isInstrumental(s.name)) : list)
     })
     return () => {
       alive = false
     }
-  }, [key])
+  }, [key, hideInstrumental])
   return songs
 }

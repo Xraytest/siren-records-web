@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { IconArrow, IconDisc, IconSearch } from './Icons'
 import { useCatalog, searchAll } from '../lib/catalog'
+import { useSettings } from '../lib/settings'
 import { usePlayer } from '../state/PlayerContext'
 
 export function SearchPalette({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -9,10 +10,11 @@ export function SearchPalette({ open, onClose }: { open: boolean; onClose: () =>
   const [cursor, setCursor] = useState(0)
   const inputRef = useRef<HTMLInputElement | null>(null)
   const catalog = useCatalog()
+  const { hideInstrumental } = useSettings()
   const { playQueue } = usePlayer()
   const navigate = useNavigate()
 
-  const result = useMemo(() => searchAll(query), [query, catalog])
+  const result = useMemo(() => searchAll(query, hideInstrumental), [query, catalog, hideInstrumental])
   const rows = useMemo(
     () => [
       ...result.albums.map((a) => ({ kind: 'album' as const, key: a.cid, title: a.name, sub: a.artistes.join(' / ') })),
