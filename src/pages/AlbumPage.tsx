@@ -1,22 +1,19 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { SongTable } from '../components/SongTable'
+import { AddToPlaylist } from '../components/AddToPlaylist'
 import { IconArrow, IconPlus, IconPlay } from '../components/Icons'
 import { useCatalog } from '../lib/catalog'
 import { useAuth } from '../state/AuthContext'
-import { usePlaylists } from '../state/PlaylistContext'
 import { usePlayer } from '../state/PlayerContext'
-import { toast } from '../lib/toast'
 import { openAuth } from '../lib/authDialog'
-import { useNavigate } from 'react-router-dom'
 
 export function AlbumPage() {
   const { cid } = useParams()
   const catalog = useCatalog()
   const { playQueue } = usePlayer()
   const { user } = useAuth()
-  const { create } = usePlaylists()
-  const navigate = useNavigate()
+  const [picking, setPicking] = useState(false)
 
   const album = cid ? catalog?.albums.get(cid) : undefined
   const songs = useMemo(
@@ -28,20 +25,6 @@ export function AlbumPage() {
   if (!album) return <div className="empty-block">找不到这张专辑。<Link to="/archive" className="text-link">返回档案</Link></div>
 
   const trackList = songs as NonNullable<typeof songs[number]>[]
-
-  const collect = async () => {
-    if (!user) return openAuth('register')
-    const playlist = await create({
-      name: album.name,
-      description: `自《${album.name}》收录的整张专辑。`,
-      songs: album.songs.map((s) => s.cid),
-      coverSongCid: album.songs[0]?.cid ?? null,
-      tags: ['整张专辑'],
-    })
-    if (!playlist) return
-    toast(`已建歌单《${playlist.name}》`, 'ok')
-    navigate(`/playlist/${playlist.id}`)
-  }
 
   return (
     <div className="album-page">
@@ -78,8 +61,8 @@ export function AlbumPage() {
             >
               <IconPlay size={13} /> 播放整张
             </button>
-            <button className="btn" onClick={collect}>
-              <IconPlus size={14} /> 收进歌单
+            <button className="btn" onClick={() => (user ? setPicking(true) : openAuth('login'))}>
+              <IconPlus size={14} /> 整张加入歌单
             </button>
             <a className="btn btn--ghost" href={`https://monster-siren.hypergryph.com/album/${album.cid}`} target="_blank" rel="noreferrer">
               官方页 <IconArrow size={13} />
@@ -98,6 +81,7 @@ export function AlbumPage() {
         </header>
         <SongTable songs={trackList} label={album.name} />
       </section>
+      <AddToPlaylist songs={picking ? trackList : []} onClose={() => setPicking(false)} />
     </div>
   )
 }

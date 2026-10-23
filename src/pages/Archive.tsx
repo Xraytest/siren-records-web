@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { AlbumTile } from '../components/AlbumTile'
 import { IconGrid, IconPlay, IconSearch } from '../components/Icons'
@@ -7,14 +7,30 @@ import { padIndex } from '../lib/format'
 import { usePlayer } from '../state/PlayerContext'
 
 type Sort = 'default' | 'name' | 'tracks'
+type View = 'grid' | 'list'
+
+// 页面卸载后仍保留浏览状态，返回本页时可继续看到已展开的列表
+const persisted: { query: string; sort: Sort; view: View; limit: number } = {
+  query: '',
+  sort: 'default',
+  view: 'grid',
+  limit: 24,
+}
 
 export function Archive() {
   const catalog = useCatalog()
   const { playQueue } = usePlayer()
-  const [query, setQuery] = useState('')
-  const [sort, setSort] = useState<Sort>('default')
-  const [view, setView] = useState<'grid' | 'list'>('grid')
-  const [limit, setLimit] = useState(24)
+  const [query, setQuery] = useState(persisted.query)
+  const [sort, setSort] = useState<Sort>(persisted.sort)
+  const [view, setView] = useState<View>(persisted.view)
+  const [limit, setLimit] = useState(persisted.limit)
+
+  useEffect(() => {
+    persisted.query = query
+    persisted.sort = sort
+    persisted.view = view
+    persisted.limit = limit
+  }, [query, sort, view, limit])
 
   const albums = useMemo(() => {
     const base = catalog?.catalog.albums ?? []

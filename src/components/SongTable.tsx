@@ -107,7 +107,7 @@ export function SongTable({ songs, label, showAlbum, onRemove, onMove, empty }: 
           )
         })}
       </div>
-      <AddToPlaylist song={picked} onClose={() => setPicked(null)} />
+      <AddToPlaylist songs={picked ? [picked] : []} onClose={() => setPicked(null)} />
     </>
   )
 }

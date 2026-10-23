@@ -444,7 +444,72 @@ async function handleApi(req, res, pathname) {
     throw new HttpError(405, '不支持的方法')
   }
 
+  // --- audio：官方音频地址带时效签名，需在播放时向官方接口换取新地址 ---
+  if (parts[1] === 'audio' && parts[2] && (method === 'GET' || method === 'HEAD')) {
+    const cid = parts[2]
+    if (!/^\d{1,12}$/.test(cid)) throw new HttpError(400, '曲目编号不合法')
+    const source = await resolveAudio(cid)
+    if (!source) throw new HttpError(502, '无法获取音频地址')
+    res.writeHead(302, { Location: source, 'Cache-Control': 'no-store' })
+    res.end()
+    return
+  }
+
+  if (parts[1] === 'lyric' && parts[2] && (method === 'GET' || method === 'HEAD')) {
+    const cid = parts[2]
+    if (!/^\d{1,12}$/.test(cid)) throw new HttpError(400, '曲目编号不合法')
+    const source = await resolveLyric(cid)
+    if (!source) {
+      // 纯音乐等没有歌词的曲目：返回空内容，避免前端产生错误日志
+      res.writeHead(204, { 'Cache-Control': 'no-store' })
+      res.end()
+      return
+    }
+    res.writeHead(302, { Location: source, 'Cache-Control': 'no-store' })
+    res.end()
+    return
+  }
+
   throw new HttpError(404, '接口不存在')
+}
+
+/* ---------- 官方接口 ---------- */
+
+const OFFICIAL = 'https://monster-siren.hypergryph.com'
+const SONG_CACHE_MS = 30 * 60 * 1000
+const songCache = new Map()
+
+async function officialSong(cid) {
+  const hit = songCache.get(cid)
+  if (hit && hit.expiresAt > Date.now()) return hit.data
+  const res = await fetch(`${OFFICIAL}/api/song/${cid}`, {
+    headers: { 'User-Agent': 'Mozilla/5.0 siren-archive', Accept: 'application/json' },
+    signal: AbortSignal.timeout(15_000),
+  })
+  if (!res.ok) throw new HttpError(502, `官方接口返回 ${res.status}`)
+  const body = await res.json()
+  if (body?.code !== 0 || !body?.data) throw new HttpError(502, '官方接口数据异常')
+  const data = { sourceUrl: body.data.sourceUrl || '', lyricUrl: body.data.lyricUrl || '' }
+  songCache.set(cid, { data, expiresAt: Date.now() + SONG_CACHE_MS })
+  return data
+}
+
+async function resolveAudio(cid) {
+  try {
+    const data = await officialSong(cid)
+    return /^https:\/\//.test(data.sourceUrl) ? data.sourceUrl : null
+  } catch {
+    return null
+  }
+}
+
+async function resolveLyric(cid) {
+  try {
+    const data = await officialSong(cid)
+    return /^https:\/\//.test(data.lyricUrl) ? data.lyricUrl : null
+  } catch {
+    return null
+  }
 }
 
 /* ---------- static ---------- */

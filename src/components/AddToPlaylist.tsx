@@ -2,37 +2,45 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Modal } from './Modal'
 import { IconPlus } from './Icons'
+import { getSong } from '../lib/catalog'
 import { useAuth } from '../state/AuthContext'
 import { usePlaylists } from '../state/PlaylistContext'
 import { toast } from '../lib/toast'
 import type { Song } from '../lib/types'
 
 interface Props {
-  song: Song | null
+  songs: Song[]
   onClose: () => void
 }
 
-export function AddToPlaylist({ song, onClose }: Props) {
+export function AddToPlaylist({ songs, onClose }: Props) {
   const { user } = useAuth()
   const { playlists, create, addSongs } = usePlaylists()
   const [name, setName] = useState('')
   const [creating, setCreating] = useState(false)
 
-  if (!song) return null
+  if (!songs.length) return null
+
+  const cids = songs.map((s) => s.cid)
+  const title = songs.length === 1 ? songs[0].name : `${songs.length} 首曲目 · ${songs[0].albumName}`
 
   const add = async (id: string, label: string) => {
-    const added = await addSongs(id, [song.cid])
+    const added = await addSongs(id, cids)
     if (added === null) return
-    toast(added ? `已加入《${label}》` : `《${label}》中已存在该曲目`, added ? 'ok' : 'info')
+    if (songs.length === 1) {
+      toast(added ? `已加入《${label}》` : `《${label}》中已存在该曲目`, added ? 'ok' : 'info')
+    } else {
+      toast(added ? `已向《${label}》加入 ${added} 首` : `《${label}》中已包含这些曲目`, added ? 'ok' : 'info')
+    }
     onClose()
   }
 
   const submitNew = async () => {
     const trimmed = name.trim()
     if (!trimmed) return
-    const playlist = await create({ name: trimmed, songs: [song.cid], coverSongCid: song.cid })
+    const playlist = await create({ name: trimmed, songs: cids, coverSongCid: cids[0] })
     if (!playlist) return
-    toast(`已创建《${playlist.name}》并加入`, 'ok')
+    toast(`已创建《${playlist.name}》并加入 ${cids.length} 首`, 'ok')
     onClose()
   }
 
@@ -41,7 +49,7 @@ export function AddToPlaylist({ song, onClose }: Props) {
       open
       onClose={onClose}
       kicker="ADD TO PLAYLIST"
-      title={song.name}
+      title={title}
       footer={
         !user ? (
           <Link className="btn btn--primary" to="/account">
@@ -74,24 +82,23 @@ export function AddToPlaylist({ song, onClose }: Props) {
           )}
           <div className="pick-list">
             {playlists.length === 0 && <p className="hint">还没有歌单，先新建一个。</p>}
-            {playlists.map((p) => (
-              <button key={p.id} className="pick-row" onClick={() => void add(p.id, p.name)}>
-                <span className="pick-cover">
-                  {p.coverSongCid ? (
-                    <img src={song.albumCover} alt="" />
-                  ) : (
-                    <span className="pick-empty" />
-                  )}
-                </span>
-                <span className="pick-meta">
-                  <strong>{p.name}</strong>
-                  <small>{p.songs.length} 首曲目</small>
-                </span>
-                <span className="pick-add">
-                  <IconPlus size={14} />
-                </span>
-              </button>
-            ))}
+            {playlists.map((p) => {
+              const cover = p.coverSongCid ? getSong(p.coverSongCid)?.albumCover : null
+              return (
+                <button key={p.id} className="pick-row" onClick={() => void add(p.id, p.name)}>
+                  <span className="pick-cover">
+                    {cover ? <img src={cover} alt="" /> : <span className="pick-empty" />}
+                  </span>
+                  <span className="pick-meta">
+                    <strong>{p.name}</strong>
+                    <small>{p.songs.length} 首曲目</small>
+                  </span>
+                  <span className="pick-add">
+                    <IconPlus size={14} />
+                  </span>
+                </button>
+              )
+            })}
           </div>
         </>
       )}

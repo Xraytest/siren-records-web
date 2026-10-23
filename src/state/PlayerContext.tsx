@@ -65,6 +65,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const audioCtxRef = useRef<AudioContext | null>(null)
   const analyserRef = useRef<AnalyserNode | null>(null)
+  const loadedCidRef = useRef<string | null>(null)
   const [analyser, setAnalyser] = useState<AnalyserNode | null>(null)
 
   const [queue, setQueue] = useState<Song[]>([])
@@ -126,9 +127,11 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const audio = getAudio()
-    if (!current?.sourceUrl) return
-    if (audio.src !== current.sourceUrl) {
-      audio.src = current.sourceUrl
+    if (!current?.cid) return
+    // 官方音频地址带时效签名，改由服务端在播放时换取新地址后 302 跳转
+    if (loadedCidRef.current !== current.cid) {
+      loadedCidRef.current = current.cid
+      audio.src = `/api/audio/${current.cid}`
       setCurrentTime(0)
       setDuration(0)
       setLoading(true)
@@ -203,13 +206,13 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   }, [getAudio, repeat, shuffle, index, queue.length])
 
   useEffect(() => {
-    if (!current?.lyricUrl) {
+    if (!current?.cid) {
       setLyrics([])
       return
     }
     let alive = true
     setLyricLoading(true)
-    fetch(current.lyricUrl)
+    fetch(`/api/lyric/${current.cid}`)
       .then((res) => (res.ok ? res.text() : Promise.reject(new Error('no lyric'))))
       .then((text) => {
         if (alive) setLyrics(parseLrc(text))
@@ -223,7 +226,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     return () => {
       alive = false
     }
-  }, [current?.cid, current?.lyricUrl])
+  }, [current?.cid])
 
   useEffect(() => {
     if (!current || !('mediaSession' in navigator)) return

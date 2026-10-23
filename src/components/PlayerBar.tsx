@@ -1,21 +1,35 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
-  IconClose, IconDown, IconLyrics, IconMute, IconNext, IconPause, IconPlay, IconPrev,
+  IconClose, IconDown, IconLyrics, IconMute, IconNext, IconPause, IconPlay, IconPlus, IconPrev,
   IconQueue, IconRepeat, IconRepeatOne, IconShuffle, IconTrash, IconVolume,
 } from './Icons'
+import { AddToPlaylist } from './AddToPlaylist'
 import { formatDuration } from '../lib/format'
 import { usePlayer } from '../state/PlayerContext'
+import { useAuth } from '../state/AuthContext'
+import { openAuth } from '../lib/authDialog'
+import type { Song } from '../lib/types'
 
 export function PlayerBar() {
   const p = usePlayer()
+  const { user } = useAuth()
   const [expanded, setExpanded] = useState(false)
   const [panel, setPanel] = useState<'lyrics' | 'queue'>('lyrics')
   const [hovering, setHovering] = useState(false)
+  const [picked, setPicked] = useState<Song | null>(null)
 
   const progress = p.duration > 0 ? (p.currentTime / p.duration) * 100 : 0
 
   if (!p.current) return null
+
+  const collect = (song: Song) => {
+    if (!user) {
+      openAuth('login')
+      return
+    }
+    setPicked(song)
+  }
 
   return (
     <>
@@ -89,6 +103,9 @@ export function PlayerBar() {
             <button className="icon-btn" onClick={() => { setPanel('lyrics'); setExpanded(true) }} title="歌词">
               <IconLyrics size={16} />
             </button>
+            <button className="icon-btn" onClick={() => collect(p.current as Song)} title="加入歌单">
+              <IconPlus size={16} />
+            </button>
             <button className="icon-btn" onClick={() => { setPanel('queue'); setExpanded(true) }} title="播放队列">
               <IconQueue size={16} />
             </button>
@@ -124,7 +141,7 @@ export function PlayerBar() {
                 <button className={panel === 'lyrics' ? 'is-on' : ''} onClick={() => setPanel('lyrics')}>歌词</button>
                 <button className={panel === 'queue' ? 'is-on' : ''} onClick={() => setPanel('queue')}>队列 {p.queue.length}</button>
               </div>
-              {panel === 'lyrics' ? <Lyrics /> : <QueuePanel />}
+              {panel === 'lyrics' ? <Lyrics /> : <QueuePanel onCollect={collect} />}
             </div>
           </div>
           <div className="player-view-foot">
@@ -136,6 +153,7 @@ export function PlayerBar() {
           </div>
         </div>
       )}
+      <AddToPlaylist songs={picked ? [picked] : []} onClose={() => setPicked(null)} />
     </>
   )
 }
@@ -183,7 +201,7 @@ function Lyrics() {
   )
 }
 
-function QueuePanel() {
+function QueuePanel({ onCollect }: { onCollect: (song: Song) => void }) {
   const { queue, index, playQueue, removeFromQueue, contextLabel } = usePlayer()
   return (
     <div className="queue">
@@ -199,6 +217,9 @@ function QueuePanel() {
               <strong>{song.name}</strong>
               <small>{song.artistes}</small>
             </span>
+          </button>
+          <button className="icon-btn icon-btn--sm" onClick={() => onCollect(song)} title="加入歌单">
+            <IconPlus size={13} />
           </button>
           <button className="icon-btn icon-btn--sm" onClick={() => removeFromQueue(song.cid)} title="移除">
             <IconTrash size={13} />
