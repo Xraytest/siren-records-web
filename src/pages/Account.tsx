@@ -209,11 +209,11 @@ export function Account() {
           <div>
             <strong>关于这套账号系统</strong>
             <p>
-              账号、密码、歌单与广场条目都保存在服务端（SQLite），登录状态由 30 天有效的会话令牌维持。
+              账号、密码、歌单与广场条目都保存在服务端（Cloudflare D1 / SQLite），登录状态由 30 天有效的会话令牌维持。
               换设备或多浏览器登录都能取回同一份数据；「备份全部」仍可导出 JSON 作为离线留存。
             </p>
           </div>
-          <span className="mono">SERVER / SQLITE</span>
+          <span className="mono">SERVER / D1</span>
         </div>
       </section>
 

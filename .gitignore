@@ -32,3 +32,10 @@ data
 *.njsproj
 *.sln
 *.sw?
+
+# 宣传片工程：保留脚本与成片，中间抓帧/合成不进仓库
+promo/capture/frames
+promo/capture/profile
+promo/build/
+promo/qa/
+promo/.demo-token

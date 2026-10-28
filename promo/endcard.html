@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>SIREN RECORDS · 片尾</title>
+<style>
+  @font-face {
+    font-family: 'Noto Sans SC';
+    src: url('file:///C:/Windows/Fonts/Noto%20Sans%20SC.ttf') format('truetype');
+    font-weight: 400;
+  }
+  @font-face {
+    font-family: 'JetBrains Mono';
+    src: url('fonts/jetbrains-mono-latin-400-normal.woff2') format('woff2');
+    font-weight: 400;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1920px; height: 1080px; overflow: hidden; background: #050607; }
+  body { font-family: 'Noto Sans SC', sans-serif; color: #e8f6ff; }
+
+  .stage {
+    position: relative; width: 1920px; height: 1080px;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 34px;
+    background:
+      radial-gradient(900px 520px at 50% 46%, rgba(160, 237, 255, 0.10), rgba(5, 6, 7, 0) 70%),
+      #050607;
+  }
+  /* 细网格与四角标记，延续站内的取景框语言 */
+  .grid {
+    position: absolute; inset: 0;
+    background-image:
+      linear-gradient(to right, rgba(160,237,255,0.055) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(160,237,255,0.055) 1px, transparent 1px);
+    background-size: 160px 160px;
+    mask-image: radial-gradient(1100px 620px at 50% 52%, #000 30%, transparent 78%);
+  }
+  .corner { position: absolute; width: 26px; height: 26px; border: 1px solid rgba(160,237,255,0.34); }
+  .corner.tl { top: 64px; left: 64px; border-right: none; border-bottom: none; }
+  .corner.tr { top: 64px; right: 64px; border-left: none; border-bottom: none; }
+  .corner.bl { bottom: 64px; left: 64px; border-right: none; border-top: none; }
+  .corner.br { bottom: 64px; right: 64px; border-left: none; border-top: none; }
+
+  .kicker {
+    font-family: 'JetBrains Mono', monospace; font-size: 17px; letter-spacing: 6px;
+    color: rgba(160, 237, 255, 0.72); text-transform: uppercase;
+  }
+  .brand { display: flex; align-items: center; gap: 26px; }
+  .brand .word { font-size: 108px; font-weight: 500; letter-spacing: 10px; line-height: 1; }
+  .diamond {
+    width: 26px; height: 26px; background: #a0edff; transform: rotate(45deg);
+    box-shadow: 0 0 26px rgba(160, 237, 255, 0.65);
+  }
+  .rule { width: 760px; height: 1px; background: rgba(160, 237, 255, 0.28); }
+  .url {
+    font-family: 'JetBrains Mono', monospace; font-size: 34px; letter-spacing: 1.6px;
+    color: #a0edff;
+  }
+  .meta {
+    display: flex; gap: 46px; font-family: 'JetBrains Mono', monospace;
+    font-size: 15px; letter-spacing: 3.4px; color: rgba(232, 246, 255, 0.44);
+    text-transform: uppercase;
+  }
+  .note { font-size: 19px; color: rgba(232, 246, 255, 0.42); letter-spacing: 2px; }
+</style>
+</head>
+<body>
+  <div class="stage">
+    <div class="grid"></div>
+    <span class="corner tl"></span><span class="corner tr"></span>
+    <span class="corner bl"></span><span class="corner br"></span>
+
+    <div class="kicker">Unofficial Archive · 塞壬唱片非官方档案</div>
+    <div class="brand">
+      <span class="word">SIREN</span>
+      <span class="diamond"></span>
+      <span class="word">RECORDS</span>
+    </div>
+    <div class="rule"></div>
+    <div class="url">siren-records-web.chengqing-2008.workers.dev</div>
+    <div class="meta">
+      <span>298 Albums</span><span>911 Tracks</span><span>Playlists · Share · Square</span>
+    </div>
+    <div class="note">曲库版权归 塞壬唱片 / 鹰角网络，本项目仅作前端技术演示</div>
+  </div>
+</body>
+</html>
