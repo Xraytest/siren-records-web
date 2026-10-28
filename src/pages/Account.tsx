@@ -24,7 +24,7 @@ export function Account() {
           <span className="kicker">ACCOUNT / 04</span>
           <h1>为这张唱片建立一份身份</h1>
           <p>
-            账号、密码与歌单都保存在服务器上，换设备登录即可取回。密码以 scrypt 加盐哈希存储，从不保存明文。
+            账号、密码与歌单都保存在服务器上，换设备登录即可取回。密码以 PBKDF2 加盐哈希存储，从不保存明文。
           </p>
           <div className="hero-actions">
             <button className="btn btn--primary" onClick={() => openAuth('register')}>
@@ -40,7 +40,7 @@ export function Account() {
               <span>服务器已注册档案</span>
             </div>
             <div>
-              <strong className="mono">SCRYPT</strong>
+              <strong className="mono">PBKDF2</strong>
               <span>加盐密钥派生</span>
             </div>
             <div>

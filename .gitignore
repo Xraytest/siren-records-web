@@ -18,6 +18,10 @@ data
 *.db-shm
 *.db-wal
 
+# Wrangler 本地状态（D1 本地库、缓存）
+.wrangler
+.dev.vars
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

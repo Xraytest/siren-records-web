@@ -1,0 +1,24 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "siren-records-web",
+  "main": "worker/index.mjs",
+  "compatibility_date": "2026-10-20",
+  "compatibility_flags": ["nodejs_compat"],
+  "account_id": "ebfbeefc8f6cd5c3d9b305332bfd5168",
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application"
+  },
+  "observability": {
+    "enabled": true
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "siren-records",
+      "database_id": "99305b68-08ef-4df0-b00d-10e829e9ccfa",
+      "migrations_dir": "migrations"
+    }
+  ]
+}

@@ -12,24 +12,46 @@
 - **分享**：歌单完整数据经 LZ-String 压缩后写入链接（`#/share/<code>`），无需登录即可跨设备传递；也支持复制分享码。
 - **发布**：生成只读快照进入「公开广场」，可更新或撤下。
 - **导出 / 导入**：单张歌单或全部歌单导出为 JSON（含完整曲目信息），支持文件导入、分享码导入与账号备份恢复。
-- **账号系统**：服务端注册 / 登录，密码以 scrypt（随机盐 + 64 字节派生）哈希保存，歌单与广场数据存于 SQLite，换设备登录即可取回。
+- **账号系统**：服务端注册 / 登录，密码以 PBKDF2（随机盐 + 10 万次迭代）哈希保存，歌单与广场数据存于 D1/SQLite，换设备登录即可取回。
 
 ## 技术栈
 
 前端 Vite + React 19 + TypeScript，HashRouter（适配任意子路径）。
 
-后端为单文件 Node 服务 `server/server.mjs`：内置 `node:http` + `node:sqlite`，无第三方依赖，同时托管 `dist/` 静态文件与 `/api/*` 接口。会话令牌有效期 30 天，存于 `localStorage` 的 `siren:token`。
+后端有两套等价实现，接口契约一致：
+
+- **Cloudflare Worker**（线上）：`worker/index.mjs` + D1，静态资源走 Assets 绑定，见下节「Cloudflare 部署」。
+- **本地 Node**（开发）：`server/server.mjs`，内置 `node:http` + `node:sqlite`，无第三方依赖，同时托管 `dist/` 与 `/api/*`。
+
+会话令牌有效期 30 天，存于 `localStorage` 的 `siren:token`。
 
 ## 本地运行
 
 ```bash
 npm install
-npm run server       # 后端 http://localhost:8090（含静态托管）
+npm run server       # Node 后端 http://localhost:8090（含静态托管）
 npm run dev          # 前端 http://localhost:5173，/api 自动代理到 8090
+npm run dev:cf       # Worker 后端 http://127.0.0.1:8787（本地 D1）
 npm run build        # 输出 dist/
 ```
 
-本地数据默认写入项目下的 `data/siren.db`（已 gitignore），可用 `DATA_DIR` 环境变量改路径。
+本地 Node 数据默认写入项目下的 `data/siren.db`（已 gitignore），可用 `DATA_DIR` 环境变量改路径。
+
+## Cloudflare 部署
+
+线上地址：<https://siren-records-web.chengqing-2008.workers.dev>
+
+- Worker 名 `siren-records-web`，入口 `worker/index.mjs`，配置在 `wrangler.jsonc`。
+- 静态资源用 Assets 绑定（`env.ASSETS`）+ `single-page-application` 兜底，`/` 与任意前端路由都返回 `index.html`，`/api/*` 优先命中 Worker。
+- 数据库用 D1（库名 `siren-records`），schema 在 `migrations/0001_init.sql`。
+
+```bash
+npx wrangler login                                   # 首次授权
+npx wrangler d1 migrations apply siren-records --remote
+npm run build && npx wrangler deploy
+```
+
+改动 schema 时新增 `migrations/0002_*.sql` 后再执行一次 migrations apply，不要改已应用的迁移文件。
 
 ## 曲库快照
 
@@ -43,9 +65,9 @@ node scripts/fetch-catalog.mjs
 MSR_PROXY=socks5h://127.0.0.1:10808 node scripts/fetch-catalog.mjs
 ```
 
-## 部署
+## 自建部署
 
-`vite.config.ts` 使用 `base: './'`，`dist/` 可放在任意静态服务器或子路径下；但由于账号与歌单依赖 `/api`，需与 `server/server.mjs` 同域部署（或反向代理 `/api`）。
+`vite.config.ts` 使用 `base: './'`，`dist/` 可放在任意静态服务器或子路径下；但由于账号与歌单依赖 `/api`，需与 `server/server.mjs` 同域部署（或反向代理 `/api`）。Cloudflare 之外的机器可用下面的 Docker 方式跑 Node 版。
 
 示例（Docker，静态文件与数据库分别挂载）：
 
