@@ -105,10 +105,20 @@ export interface ImportedPlaylist {
   songs: string[]
 }
 
-/** 解析导入文件：兼容本应用的曲库包与外部 {name, songs:[cid]} 结构 */
+/** 解析导入文件：兼容本应用导出的曲库包（{playlists:[...]}）与外部 {name, songs:[cid]} 结构 */
 export function parseImport(raw: string): ImportedPlaylist[] {
   const data = JSON.parse(raw) as unknown
-  const list = Array.isArray(data) ? data : [data]
+  const unpack = (value: unknown): unknown[] => {
+    if (Array.isArray(value)) return value
+    if (value && typeof value === 'object') {
+      const list = (value as { playlists?: unknown }).playlists
+      // 本应用导出的包：顶层是 {format, version, exportedAt, playlists}
+      if (Array.isArray(list)) return list
+      return [value]
+    }
+    return []
+  }
+  const list = unpack(data)
   const out: ImportedPlaylist[] = []
   for (const item of list as Record<string, unknown>[]) {
     if (!item || typeof item !== 'object') continue
