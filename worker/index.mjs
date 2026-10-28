@@ -92,6 +92,18 @@ function tagList(value) {
     .slice(0, 6)
 }
 
+// 广场封面只接受内嵌 data:image 或官方 CDN：否则一条发布就能把 feed 撑到上百 MB，
+// 并且每个访客的浏览器都会向攻击者指定的地址发请求（IP 信标）。
+const COVER_MAX = 200_000
+const OFFICIAL_IMAGE_PREFIX = 'https://web.hycdn.cn/siren/pic/'
+function normalizeCover(value) {
+  if (typeof value !== 'string' || !value) return null
+  const cover = value.slice(0, COVER_MAX)
+  if (cover.startsWith('data:image/')) return cover
+  if (cover.startsWith(OFFICIAL_IMAGE_PREFIX)) return cover
+  return null
+}
+
 /* ---------- 加密helper ---------- */
 
 const enc = new TextEncoder()
@@ -122,6 +134,37 @@ function safeEqual(a, b) {
   let diff = 0
   for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i)
   return diff === 0
+}
+
+// 用户不存在时也跑一次等价的 PBKDF2，抹平「存在 vs 不存在」的时间差，
+// 否则可以靠响应时间稳定枚举已注册用户名。
+// 注意：随机数与密钥派生都放在函数里做，不能在全局作用域调用（Workers 10021）。
+let DUMMY_SALT = null
+let DUMMY_HASH = null
+async function dummyCreds() {
+  if (!DUMMY_SALT) {
+    DUMMY_SALT = randomHex(16)
+    DUMMY_HASH = await hashPassword(randomHex(32), DUMMY_SALT)
+  }
+  return { salt: DUMMY_SALT, hash: DUMMY_HASH }
+}
+
+// 简易限速（每 isolate 内存计数）。Workers 多实例不共享，抗不了分布式暴力破解，
+// 生产上应叠加 CF WAF 的 Rate Limiting 规则；这里至少挡住单点连打。
+const AUTH_WINDOW_MS = 60_000
+const AUTH_MAX_PER_WINDOW = 20
+const authHits = new Map()
+
+function authAllowed(request) {
+  const key = request.headers.get('CF-Connecting-IP') || 'unknown'
+  const now = Date.now()
+  const hit = authHits.get(key)
+  if (!hit || hit.reset < now) {
+    authHits.set(key, { reset: now + AUTH_WINDOW_MS, n: 1 })
+    return true
+  }
+  hit.n += 1
+  return hit.n <= AUTH_MAX_PER_WINDOW
 }
 
 function makeIdentity(name) {
@@ -292,6 +335,8 @@ async function handleApi(request, env, url) {
 
   // --- auth ---
   if (parts[1] === 'auth') {
+    if (!authAllowed(request)) throw new HttpError(429, '尝试过于频繁，请稍后再试')
+
     if (parts[2] === 'register' && method === 'POST') {
       const body = await readJson(request)
       const name = clipText(body.name, 40).trim()
@@ -317,7 +362,11 @@ async function handleApi(request, env, url) {
       const name = clipText(body.name, 40).trim()
       const password = typeof body.password === 'string' ? body.password : ''
       const row = await env.DB.prepare('SELECT * FROM users WHERE name = ? COLLATE NOCASE').bind(name).first()
-      if (!row || !safeEqual(await hashPassword(password, row.salt), row.hash)) {
+      // 用户不存在也照样跑一次派生，抹平时间差（否则可枚举用户名）
+      const dummy = await dummyCreds()
+      const candidate = row ? await hashPassword(password, row.salt) : await hashPassword(password, dummy.salt)
+      const expected = row ? row.hash : dummy.hash
+      if (!row || !safeEqual(candidate, expected)) {
         throw new HttpError(401, '代号或密码不正确')
       }
       const token = await issueSession(env, row.id)
@@ -437,7 +486,12 @@ async function handleApi(request, env, url) {
         return json(200, { playlist: saved, added })
       }
       if (method === 'DELETE' && parts[4]) {
-        const cid = decodeURIComponent(parts[4])
+        let cid
+        try {
+          cid = decodeURIComponent(parts[4])
+        } catch {
+          throw new HttpError(400, '曲目编号不合法')
+        }
         const songs = playlist.songs.filter((c) => c !== cid)
         const saved = await persist(env, row, {
           songs,
@@ -465,7 +519,7 @@ async function handleApi(request, env, url) {
       const saved = await persist(env, row, {
         publishedAt: now,
         publishCode: code,
-        cover: typeof body.cover === 'string' ? body.cover : null,
+        cover: normalizeCover(body.cover),
         updatedAt: now,
       })
       const entry = (await feedItems(env)).find((item) => item.code === code) || null
@@ -505,9 +559,24 @@ async function handleApi(request, env, url) {
 
 /* ---------- Worker 入口 ---------- */
 
+// 过期会话行只增不减会让 sessions 无限膨胀；每 6 小时清扫一次（低频、异步）。
+async function sweepSessions(env) {
+  try {
+    await env.DB.prepare('DELETE FROM sessions WHERE expiresAt <= ?').bind(Date.now()).run()
+  } catch (error) {
+    console.error('[siren] sessions 清理失败', error)
+  }
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url)
+
+    // 过期会话行只增不减会让 sessions 无限膨胀；每 6 小时顺带清扫一次，不阻塞当前请求。
+    if (!env.SESSION_SWEEP_DONE || Date.now() - env.SESSION_SWEEP_DONE > 6 * 3600_000) {
+      env.SESSION_SWEEP_DONE = Date.now()
+      ctx.waitUntil(sweepSessions(env))
+    }
 
     if (url.pathname.startsWith('/api/')) {
       try {
@@ -519,9 +588,23 @@ export default {
       }
     }
 
-    // 其余请求交给静态资源绑定；SPA 走 index.html 兜底
+    // 静态资源：补上 CSP / X-Frame-Options / Referrer-Policy。
+    // 站点自身只用同源脚本与塞壬 CDN 的图片音频，img-src 放开即可。
     if (env.ASSETS) {
-      return env.ASSETS.fetch(request)
+      const res = await env.ASSETS.fetch(request)
+      if (res.status !== 404) {
+        const headers = new Headers(res.headers)
+        headers.set(
+          'Content-Security-Policy',
+          "default-src 'self'; img-src 'self' data: https://web.hycdn.cn https://res01.hycdn.cn; " +
+            "media-src 'self' https://res01.hycdn.cn; connect-src 'self' https://monster-siren.hypergryph.com; " +
+            "style-src 'self' 'unsafe-inline'; script-src 'self'; frame-ancestors 'none'; base-uri 'self'",
+        )
+        headers.set('X-Frame-Options', 'DENY')
+        headers.set('Referrer-Policy', 'no-referrer')
+        return new Response(res.body, { status: res.status, statusText: res.statusText, headers })
+      }
+      return res
     }
 
     return new Response('前端尚未构建', { status: 404, headers: { 'Content-Type': 'text/plain; charset=utf-8' } })

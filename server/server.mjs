@@ -59,6 +59,34 @@ function hashPassword(password, salt) {
   return scryptSync(password, salt, 64).toString('hex')
 }
 
+// 用户不存在时也要跑一次等价的派生，抹平「存在 ~30ms / 不存在 ~1.4ms」的时间差，
+// 否则可以靠响应时间稳定枚举已注册用户名。DUMMY 的盐/哈希只在内存里生成。
+const DUMMY_SALT = randomBytes(16).toString('hex')
+const DUMMY_HASH = hashPassword(randomBytes(32).toString('hex'), DUMMY_SALT)
+
+// 简易限速：同一 IP 的认证请求按分钟窗口计数，超限直接拒。
+// Worker 线上版建议同时在 CF 侧配 WAF Rate Limiting 规则（零代码、更抗绕过）。
+const AUTH_WINDOW_MS = 60_000
+const AUTH_MAX_PER_WINDOW = 20
+const authHits = new Map()
+
+function authAllowed(req) {
+  const key = req.socket?.remoteAddress || 'unknown'
+  const now = Date.now()
+  const hit = authHits.get(key)
+  if (!hit || hit.reset < now) {
+    authHits.set(key, { reset: now + AUTH_WINDOW_MS, n: 1 })
+    return true
+  }
+  hit.n += 1
+  return hit.n <= AUTH_MAX_PER_WINDOW
+}
+
+if (authHits.size > 4096) {
+  // 防止 Map 无限增长：窗口极短，定期整体清理即可
+  setInterval(() => authHits.clear(), AUTH_WINDOW_MS).unref()
+}
+
 function safeEqual(a, b) {
   const bufA = Buffer.from(a, 'hex')
   const bufB = Buffer.from(b, 'hex')
@@ -103,6 +131,18 @@ function cidList(value) {
 function tagList(value) {
   if (!Array.isArray(value)) return []
   return value.filter((v) => typeof v === 'string' && v.trim()).map((v) => v.trim().slice(0, 24)).slice(0, 6)
+}
+
+// 广场封面只接受内嵌 data:image 或官方 CDN：否则一条发布就能把 feed 撑到上百 MB，
+// 并且每个访客的浏览器都会向攻击者指定的地址发请求（IP 信标）。
+const COVER_MAX = 200_000
+const OFFICIAL_IMAGE_PREFIX = 'https://web.hycdn.cn/siren/pic/'
+function normalizeCover(value) {
+  if (typeof value !== 'string' || !value) return null
+  const cover = value.slice(0, COVER_MAX)
+  if (cover.startsWith('data:image/')) return cover
+  if (cover.startsWith(OFFICIAL_IMAGE_PREFIX)) return cover
+  return null
 }
 
 class HttpError extends Error {
@@ -254,6 +294,8 @@ async function handleApi(req, res, pathname) {
 
   // --- auth ---
   if (parts[1] === 'auth') {
+    if (!authAllowed(req)) throw new HttpError(429, '尝试过于频繁，请稍后再试')
+
     if (parts[2] === 'register' && method === 'POST') {
       const body = await readJson(req)
       const name = clipText(body.name, 40).trim()
@@ -283,7 +325,10 @@ async function handleApi(req, res, pathname) {
       const name = clipText(body.name, 40).trim()
       const password = typeof body.password === 'string' ? body.password : ''
       const row = db.prepare('SELECT * FROM users WHERE name = ? COLLATE NOCASE').get(name)
-      if (!row || !safeEqual(hashPassword(password, row.salt), row.hash)) {
+      // 用户不存在也照样跑一次派生，抹平时间差（否则可枚举用户名）
+      const candidate = row ? hashPassword(password, row.salt) : hashPassword(password, DUMMY_SALT)
+      const expected = row ? row.hash : DUMMY_HASH
+      if (!row || !safeEqual(candidate, expected)) {
         throw new HttpError(401, '代号或密码不正确')
       }
       const token = issueSession(row.id)
@@ -400,7 +445,12 @@ async function handleApi(req, res, pathname) {
         return json(res, 200, { playlist: saved, added })
       }
       if (method === 'DELETE' && parts[4]) {
-        const cid = decodeURIComponent(parts[4])
+        let cid
+        try {
+          cid = decodeURIComponent(parts[4])
+        } catch {
+          throw new HttpError(400, '曲目编号不合法')
+        }
         const songs = playlist.songs.filter((c) => c !== cid)
         const saved = persist(row, {
           songs,
@@ -429,7 +479,7 @@ async function handleApi(req, res, pathname) {
       const saved = persist(row, {
         publishedAt: now,
         publishCode: code,
-        cover: typeof body.cover === 'string' ? body.cover : null,
+        cover: normalizeCover(body.cover),
         updatedAt: now,
       })
       const entry = feedItems().find((item) => item.code === code) || null
@@ -529,13 +579,23 @@ const MIME = {
   '.woff2': 'font/woff2',
 }
 
+const SECURITY_HEADERS = {
+  'X-Content-Type-Options': 'nosniff',
+  'X-Frame-Options': 'DENY',
+  'Referrer-Policy': 'no-referrer',
+  'Content-Security-Policy':
+    "default-src 'self'; img-src 'self' data: https://web.hycdn.cn https://res01.hycdn.cn; " +
+    "media-src 'self' https://res01.hycdn.cn; connect-src 'self' https://monster-siren.hypergryph.com; " +
+    "style-src 'self' 'unsafe-inline'; script-src 'self'; frame-ancestors 'none'; base-uri 'self'",
+}
+
 async function sendFile(res, file, method, cacheControl) {
   const info = await stat(file)
   res.writeHead(200, {
     'Content-Type': MIME[path.extname(file).toLowerCase()] || 'application/octet-stream',
     'Content-Length': info.size,
     'Cache-Control': cacheControl,
-    'X-Content-Type-Options': 'nosniff',
+    ...SECURITY_HEADERS,
   })
   if (method === 'HEAD') {
     res.end()
@@ -556,7 +616,9 @@ async function serveStatic(req, res, pathname) {
   const file = path.resolve(DIST_DIR, `.${rel}`)
   const indexFile = path.join(DIST_DIR, 'index.html')
 
-  if (!file.startsWith(DIST_DIR)) {
+  // 必须带路径分隔符才算真的还在 DIST_DIR 内：只判断前缀会让
+  // /distX/secret.txt 这类兄弟目录也通过检查（dist-archive/ 同样沦陷）。
+  if (file !== DIST_DIR && !file.startsWith(DIST_DIR + path.sep)) {
     res.writeHead(403).end('Forbidden')
     return
   }
@@ -600,12 +662,21 @@ const server = createServer(async (req, res) => {
   }
 })
 
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`[siren] http://0.0.0.0:${PORT}  dist=${DIST_DIR} data=${DATA_DIR}`)
+// 默认只监听回环：避免开发服务器在局域网裸奔。需要对外时显式 HOST=0.0.0.0。
+const HOST = process.env.HOST || '127.0.0.1'
+server.listen(PORT, HOST, () => {
+  console.log(`[siren] http://${HOST}:${PORT}  dist=${DIST_DIR} data=${DATA_DIR}`)
 })
+
+// 过期会话行只增不减会让 sessions 无限膨胀，定时清扫。
+const cleanup = setInterval(() => {
+  db.prepare('DELETE FROM sessions WHERE expiresAt <= ?').run(Date.now())
+}, 6 * 3600_000)
+cleanup.unref()
 
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.on(signal, () => {
+    clearInterval(cleanup)
     server.close(() => {
       db.close()
       process.exit(0)

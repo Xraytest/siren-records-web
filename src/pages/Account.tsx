@@ -22,16 +22,17 @@ export function Account() {
       <div className="account-gate">
         <div className="account-gate-copy">
           <span className="kicker">ACCOUNT / 04</span>
-          <h1>为这张唱片建立一份身份</h1>
+          <h1>登记你的档案员呼号 (CALLSIGN)</h1>
           <p>
-            账号、密码与歌单都保存在服务器上，换设备登录即可取回。密码以 PBKDF2 加盐哈希存储，从不保存明文。
+            <strong>云端漫游与零明文加密协议。</strong>
+            你的呼号与歌单序列将实时同步至云端服务器，更换终端亦可无缝取回。通行密钥采用 PBKDF2 加盐哈希不可逆加密存储，系统从不留存任何明文记录。
           </p>
           <div className="hero-actions">
             <button className="btn btn--primary" onClick={() => openAuth('register')}>
-              建立档案
+              登记船员身份
             </button>
             <button className="btn" onClick={() => openAuth('login')}>
-              已有账号，登录
+              已有身份，登录
             </button>
           </div>
           <div className="account-facts">
@@ -45,7 +46,7 @@ export function Account() {
             </div>
             <div>
               <strong className="mono">SERVER</strong>
-              <span>数据存于服务端</span>
+              <span>云端实时同步</span>
             </div>
           </div>
         </div>
@@ -207,10 +208,10 @@ export function Account() {
         <div className="privacy-note">
           <IconGlobe size={18} />
           <div>
-            <strong>关于这套账号系统</strong>
+            <strong>云端漫游 + 本地导出双保险协议</strong>
             <p>
-              账号、密码、歌单与广场条目都保存在服务端（Cloudflare D1 / SQLite），登录状态由 30 天有效的会话令牌维持。
-              换设备或多浏览器登录都能取回同一份数据；「备份全部」仍可导出 JSON 作为离线留存。
+              登记呼号后，你的歌单序列将实时同步至云端，更换终端无缝取回；配合「便携文件导出」功能，
+              实现云端与本地双重永久备份。通行密钥采用 `PBKDF2` 加盐哈希不可逆加密，绝不留存明文。
             </p>
           </div>
           <span className="mono">SERVER / D1</span>

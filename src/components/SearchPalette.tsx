@@ -61,7 +61,7 @@ export function SearchPalette({ open, onClose }: { open: boolean; onClose: () =>
           <input
             ref={inputRef}
             value={query}
-            placeholder="搜索专辑、曲目或音乐人…"
+            placeholder="输入代号、专辑编号 (CAT#)、曲名或创作者…"
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Escape') onClose()
@@ -84,7 +84,7 @@ export function SearchPalette({ open, onClose }: { open: boolean; onClose: () =>
               <span className="kicker">INDEX / 检索</span>
               <p>输入关键词，回车直接播放曲目。共 {catalog ? catalog.all.length : '···'} 首曲目可检索。</p>
               <div className="palette-suggests">
-                {['塞壬唱片-MSR', 'Instrumental', 'OST', 'Arknights'].map((tag) => (
+                {['愚人号', '音律联觉', '塞壬唱片-MSR', 'Arknights'].map((tag) => (
                   <button key={tag} onClick={() => setQuery(tag)}>
                     {tag}
                   </button>
@@ -92,7 +92,11 @@ export function SearchPalette({ open, onClose }: { open: boolean; onClose: () =>
               </div>
             </div>
           )}
-          {query && rows.length === 0 && <div className="palette-empty">没有匹配的档案条目。</div>}
+          {query && rows.length === 0 && (
+            <div className="palette-empty">
+              未捕获匹配频段。尝试切换关键词，或检查是否在「偏好设置」中屏蔽了伴奏曲目。
+            </div>
+          )}
           {rows.map((row, i) => (
             <button
               key={`${row.kind}-${row.key}`}

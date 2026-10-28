@@ -13,7 +13,7 @@ const NAV = [
   { to: '/archive', label: '档案', en: 'ARCHIVE' },
   { to: '/library', label: '歌单', en: 'PLAYLISTS' },
   { to: '/explore', label: '广场', en: 'SQUARE' },
-  { to: '/account', label: '账号', en: 'ACCOUNT' },
+  { to: '/account', label: '身份', en: 'ACCOUNT' },
 ]
 
 export function Layout() {
@@ -49,7 +49,7 @@ export function Layout() {
       <div className="scanline" aria-hidden="true" />
 
       <header className="topbar">
-        <Link to="/" className="brand" aria-label="塞壬唱片非官方档案">
+        <Link to="/archive" className="brand" aria-label="塞壬唱片非官方声学档案">
           <span className="brand-mark">
             <IconDisc size={20} />
           </span>
@@ -72,7 +72,7 @@ export function Layout() {
         <div className="topbar-actions">
           <button className="search-trigger" onClick={() => setSearchOpen(true)}>
             <IconSearch size={15} />
-            <span>搜索曲目</span>
+            <span>检索档案 / 挑曲入单</span>
             <kbd>⌘K</kbd>
           </button>
           <Link to="/settings" className="icon-btn" title="设置" aria-label="设置">
@@ -109,7 +109,10 @@ export function Layout() {
         <div className="footer-grid">
           <div>
             <div className="wordmark">SIREN<span>◆</span>RECORDS</div>
-            <p>非官方前端档案。曲库、封面与音频版权归塞壬唱片 / 鹰角网络所有。</p>
+            <p>
+              塞壬唱片非官方声学档案站（用爱发电 · 非盈利项目）。
+              本站收录之全部曲目音频、专辑视觉与世界观文本版权均归属 塞壬唱片-MSR / 上海鹰角网络科技有限公司 所有。
+            </p>
           </div>
           <div className="footer-meta">
             <span>ARCHIVE BUILD / {catalog ? catalog.catalog.generatedAt.slice(0, 10).replace(/-/g, '.') : '——'}</span>
@@ -121,8 +124,7 @@ export function Layout() {
               官方站点 ↗
             </a>
             <Link to="/archive">全部专辑</Link>
-            <Link to="/explore">公开歌单</Link>
-            <Link to="/settings">偏好设置</Link>
+            <Link to="/explore">公开歌单</Link>            <Link to="/settings">偏好设置</Link>
           </div>
         </div>
       </footer>

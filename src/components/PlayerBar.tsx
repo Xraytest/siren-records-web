@@ -122,7 +122,7 @@ export function PlayerBar() {
               <div className="kicker">NOW PLAYING / 正在播放</div>
               <h2>{p.current.name}</h2>
             </div>
-            <button className="icon-btn" onClick={() => setExpanded(false)} aria-label="收起">
+            <button className="icon-btn" onClick={() => setExpanded(false)} aria-label="收起终端">
               <IconDown size={18} />
             </button>
           </header>
@@ -138,8 +138,8 @@ export function PlayerBar() {
             </div>
             <div className="player-view-panel">
               <div className="seg">
-                <button className={panel === 'lyrics' ? 'is-on' : ''} onClick={() => setPanel('lyrics')}>歌词</button>
-                <button className={panel === 'queue' ? 'is-on' : ''} onClick={() => setPanel('queue')}>队列 {p.queue.length}</button>
+                <button className={panel === 'lyrics' ? 'is-on' : ''} onClick={() => setPanel('lyrics')}>同步歌词 LRC</button>
+                <button className={panel === 'queue' ? 'is-on' : ''} onClick={() => setPanel('queue')}>播放序列 {p.queue.length}</button>
               </div>
               {panel === 'lyrics' ? <Lyrics /> : <QueuePanel onCollect={collect} />}
             </div>
@@ -148,7 +148,7 @@ export function PlayerBar() {
             <span className="mono">{p.current.artistes}</span>
             <span className="mono">{p.current.cid}</span>
             <button className="btn btn--ghost" onClick={() => setExpanded(false)}>
-              <IconClose size={13} /> 收起
+              <IconClose size={13} /> 收起终端
             </button>
           </div>
         </div>

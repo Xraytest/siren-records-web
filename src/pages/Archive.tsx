@@ -62,7 +62,7 @@ export function Archive() {
           <span className="kicker">ARCHIVE / 01</span>
           <h1>全部档案</h1>
           <p className="page-sub">
-            自 2019 年起，塞壬唱片发行的全部专辑都在这里。按名称、曲目数量重新编排，或直接进入检索。
+            自 2019 年起，塞壬唱片发行的全部声波记录都在这里。按发行序列、档案代号或收录体量重新编排，或直接进入检索。
           </p>
         </div>
         <div className="page-head-side">
@@ -86,15 +86,15 @@ export function Archive() {
         </label>
         <div className="toolbar-right">
           <div className="seg seg--sm">
-            <button className={sort === 'default' ? 'is-on' : ''} onClick={() => setSort('default')}>最新</button>
-            <button className={sort === 'name' ? 'is-on' : ''} onClick={() => setSort('name')}>名称</button>
-            <button className={sort === 'tracks' ? 'is-on' : ''} onClick={() => setSort('tracks')}>曲目数</button>
+            <button className={sort === 'default' ? 'is-on' : ''} onClick={() => setSort('default')}>发行序列</button>
+            <button className={sort === 'name' ? 'is-on' : ''} onClick={() => setSort('name')}>档案代号</button>
+            <button className={sort === 'tracks' ? 'is-on' : ''} onClick={() => setSort('tracks')}>收录体量</button>
           </div>
           <button className="icon-btn" onClick={() => setView(view === 'grid' ? 'list' : 'grid')} title="切换视图">
             <IconGrid size={16} />
           </button>
           <button className="btn btn--sm" onClick={shuffleAll}>
-            <IconPlay size={12} /> 随机 30 首
+            <IconPlay size={12} /> 随机注入 30 首至队列
           </button>
         </div>
       </div>

@@ -11,9 +11,9 @@ export function Settings() {
       <header className="page-head">
         <div>
           <span className="kicker">SETTINGS / 05</span>
-          <h1>偏好设置</h1>
+          <h1>当前终端本地声学滤镜</h1>
           <p className="page-sub">
-            这些开关只作用于这台设备上的浏览体验，保存在浏览器本地，不会同步到账号，也不影响服务器里已保存的歌单。
+            以下参数仅作用于本台设备的本地播放与检索环境（存储于浏览器 LocalStorage），不会篡改你云端已封存的歌单结构。
           </p>
         </div>
         <div className="page-head-side">
@@ -25,10 +25,10 @@ export function Settings() {
       <div className="settings-list">
         <div className="setting-row">
           <div className="setting-copy">
-            <strong>屏蔽伴奏音乐</strong>
+            <strong>纯净人声 / 原声过滤（屏蔽伴奏轨）</strong>
             <p>
-              曲名含「伴奏」「Instrumental」「Off Vocal」「カラオケ」等字样的曲目，将从档案专辑、搜索结果、歌单曲目与随机播放中移除。
-              关闭后立即恢复。
+              开启后，系统将自动拦截曲名含「伴奏」「Instrumental」「Off Vocal」「カラオケ」标记的纯伴奏音轨，
+              使其从专辑列表、全局检索、歌单挑曲与分享连播中隐身。关闭开关即可毫秒级无损恢复。
             </p>
           </div>
           <button
@@ -51,7 +51,7 @@ export function Settings() {
             <IconCheck size={13} /> 档案与专辑页的曲目数会随之减少，被屏蔽的曲目不会被加入播放队列。
           </li>
           <li>
-            <IconCheck size={13} /> 已保存的歌单不会丢数据，关闭屏蔽后会自动重新出现。
+            <IconCheck size={13} /> 已封存的歌单不会丢数据，关闭屏蔽后会自动重新出现。
           </li>
           <li>
             <IconCheck size={13} /> 识别基于曲名文本，可能对个别命名不规范的曲目产生误判。

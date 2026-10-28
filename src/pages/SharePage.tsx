@@ -89,7 +89,7 @@ export function SharePage() {
           </div>
           <div className="hero-actions">
             <button className="btn btn--primary" onClick={save} disabled={own}>
-              {own ? <><IconCheck size={14} /> 已保存</> : <><IconDownload size={14} /> 保存到我的歌单</>}
+              {own ? <><IconCheck size={14} /> 已转存</> : <><IconDownload size={14} /> 📥 一键转存至我的终端</>}
             </button>
             <button
               className="btn"
@@ -99,7 +99,7 @@ export function SharePage() {
               <IconPlay size={13} /> 试听
             </button>
             <button className="btn btn--ghost" onClick={copy}>
-              <IconShare size={13} /> {copied ? '已复制' : '复制链接'}
+              <IconShare size={13} /> {copied ? '已复制' : '🔗 复制分享码'}
             </button>
             {own && (
               <button className="btn btn--ghost" onClick={forkAndEdit}>

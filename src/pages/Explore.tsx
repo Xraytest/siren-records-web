@@ -40,7 +40,8 @@ export function Explore() {
           <span className="kicker">PUBLIC SQUARE / 03</span>
           <h1>公开广场</h1>
           <p className="page-sub">
-            所有人发布的歌单都会汇入这里。点击卡片即可试听，或打开分享页保存到自己的账号。
+            全境听众共筑的开放声波信标群。所有公开歌单快照均汇集于此。无需繁琐配置——点击任意卡片即可直接连播试听，
+            亦可一键转存至个人账号，或复制分享码 / 导出文件自由传播。
           </p>
         </div>
         <div className="page-head-side">
@@ -56,31 +57,31 @@ export function Explore() {
             <span />
             <span />
           </div>
-          <h2>广场目前没有歌单</h2>
-          <p>把一张歌单发布出来，它会成为第一块石碑。</p>
+          <h2>公共信标区尚处于静默状态</h2>
+          <p>发布或导入你的第一张歌单并公开——让它成为这片荒原上的第一座声学方尖碑。</p>
           <div className="hero-actions">
             <Link to="/library" className="btn btn--primary">
-              去发布 <IconArrow size={13} />
+              发布歌单快照 <IconArrow size={13} />
             </Link>
             <Link to="/archive" className="btn">
-              浏览档案
+              调阅曲库
             </Link>
           </div>
           <div className="square-steps">
             <div>
               <span className="mono">01</span>
-              <strong>创建</strong>
-              <p>在歌单里挑选曲目并排序、命名。</p>
+              <strong>编排或导入 BUILD &amp; IMPORT</strong>
+              <p>跨专辑挑曲排序，或直接导入本地歌单档案。</p>
             </div>
             <div>
               <span className="mono">02</span>
-              <strong>发布</strong>
-              <p>生成只读快照与分享码。</p>
+              <strong>封存与导出 SNAPSHOT &amp; EXPORT</strong>
+              <p>发布为不可篡改的只读快照（附专属分享码），或导出为便携文件。</p>
             </div>
             <div>
               <span className="mono">03</span>
-              <strong>传播</strong>
-              <p>任何人凭链接都能保存这张歌单。</p>
+              <strong>无界流转 FREE FLOW</strong>
+              <p>凭链接、分享码或文件，任何人皆可免登录试听、一键转存或再次分发。</p>
             </div>
           </div>
         </div>
@@ -107,7 +108,7 @@ export function Explore() {
                 <div className="feed-card-foot">
                   <span>{item.authorName} · {formatRelative(item.at)}</span>
                   <Link to={`/share/${item.code}`} className="text-link">
-                    <IconShare size={12} /> 打开分享页
+                    <IconShare size={12} /> 📥 一键转存至我的终端
                   </Link>
                 </div>
               </div>

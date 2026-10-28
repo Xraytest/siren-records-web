@@ -8,7 +8,10 @@
   "assets": {
     "directory": "./dist",
     "binding": "ASSETS",
-    "not_found_handling": "single-page-application"
+    "not_found_handling": "single-page-application",
+    // 必须让静态资源也先经过 Worker：否则命中 CF 边缘缓存时
+    // 直接返回缓存副本，Worker 里加的 CSP / X-Frame-Options 等响应头不会生效。
+    "run_worker_first": true
   },
   "observability": {
     "enabled": true

@@ -46,21 +46,23 @@ export function Home() {
       <section className="hero">
         <div className="hero-grid">
           <div className="hero-copy">
-            <div className="kicker">MONSTER SIREN RECORDS — UNOFFICIAL ARCHIVE</div>
+            <div className="kicker">MONSTER SIREN RECORDS // UNOFFICIAL AUDIO TERMINAL</div>
             <h1 className="hero-title">
               <span>SIREN</span>
               <span className="outline">RECORDS</span>
             </h1>
             <p className="hero-lead">
-              一座为塞壬唱片建立的私人档案室。检索 {catalog ? catalog.catalog.albums.length : '···'} 张专辑、
-              {catalog ? catalog.all.length : '···'} 首曲目，把它们编排成属于你的歌单，再交给下一个人。
+              <strong>一座为塞壬唱片建立的私人声学档案馆。</strong>
+              检索 {catalog ? catalog.catalog.albums.length : '···'} 张专辑、
+              {catalog ? catalog.all.length : '···'} 首曲目——在这里自由编排你的专属歌单，
+              封装为便携档案随身携带，或将这段频率完好地交给下一个人。
             </p>
             <div className="hero-actions">
               <Link to="/archive" className="btn btn--primary">
-                进入档案 <IconArrow size={14} />
+                接入声学档案 <IconArrow size={14} />
               </Link>
               <Link to="/library" className="btn">
-                我的歌单
+                编排 / 导入歌单
               </Link>
             </div>
             <div className="hero-metrics">
@@ -134,7 +136,7 @@ export function Home() {
             <h2>{user ? '你的歌单' : '歌单系统'}</h2>
           </div>
           <Link to="/library" className="section-more">
-            管理歌单 <IconArrow size={13} />
+            ⇄ 导入 / 管理歌单 <IconArrow size={13} />
           </Link>
         </header>
         {user && playlists.length > 0 ? (
@@ -163,7 +165,11 @@ export function Home() {
         ) : (
           <div className="playlist-empty">
             <div className="playlist-empty-copy">
-              <p>登录后即可创建歌单：挑曲、排序、命名、发布，也能把歌单导出成一份可携带的文件。</p>
+              <p>
+                <strong>100% 自由流转的私人声学序列。</strong>
+                跨专辑挑曲、重排轨序、命名封存。你的歌单不被任何单一平台绑架——支持随时导出为便携档案文件离线保存、
+                一键导入还原，或生成只读快照与分享码跨端传递。
+              </p>
               <div className="hero-actions">
                 {user ? (
                   <Link to="/library" className="btn btn--primary">
@@ -175,7 +181,7 @@ export function Home() {
                   </Link>
                 )}
                 <button className="btn" onClick={quickPlaylist}>
-                  随机采样生成
+                  ⚡ 随机采样 30 首
                 </button>
               </div>
             </div>
@@ -204,7 +210,7 @@ export function Home() {
             <h2>公开歌单</h2>
           </div>
           <Link to="/explore" className="section-more">
-            进入广场 <IconGlobe size={13} />
+            进入公开广场 <IconGlobe size={13} />
           </Link>
         </header>
         {feed.length ? (
@@ -226,7 +232,7 @@ export function Home() {
           </div>
         ) : (
           <div className="empty-block">
-            广场尚未有人留下歌单。<Link to="/library" className="text-link">创建一张</Link>并发布，它会出现在这里。
+            广场尚未有人留下歌单。<Link to="/library" className="text-link">编排或导入一张</Link>并发布，它会出现在这里。
           </div>
         )}
       </section>
