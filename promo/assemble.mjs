@@ -1,4 +1,4 @@
-// 组装成片：真实录屏 + GPT-SoVITS 旁白 + ASS 字幕（无背景音乐）
+// 组装成片：真实录屏 + GPT-SoVITS 旁白 + 原创配乐(ducking) + ASS 字幕 + 片尾卡
 // 响度用「先测后补」的静态增益，避免单遍 loudnorm 的动态压缩把人声越压越小声。
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { execFileSync, spawnSync } from 'node:child_process'
@@ -9,6 +9,7 @@ const here = dirname(fileURLToPath(import.meta.url))
 const build = join(here, 'build')
 const FFMPEG = process.env.FFMPEG || 'ffmpeg'
 const FFPROBE = process.env.FFPROBE || 'ffprobe'
+const MUSIC = process.env.MUSIC || null
 mkdirSync(build, { recursive: true })
 
 const LEAD = 0.3
@@ -22,10 +23,13 @@ const inputs = []
 const filters = []
 const placed = []
 segments.forEach((seg, i) => {
+  // 片尾卡没有旁白，跳过（否则会去找不存在的 narration/endcard.wav）
+  if (seg.kind === 'endcard') return
   inputs.push('-i', join(here, 'narration', `${seg.id}.wav`))
   const start = +(seg.start + LEAD).toFixed(3)
-  filters.push(`[${i}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,` +
-    `adelay=${Math.round(start * 48000)}S:all=1,volume=1[n${i}]`)
+  const idx = inputs.length / 2 - 1
+  filters.push(`[${idx}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,` +
+    `adelay=${Math.round(start * 48000)}S:all=1,volume=1[n${idx}]`)
   placed.push({ id: seg.id, start, end: +(start + seconds[seg.id]).toFixed(3), seconds: seconds[seg.id] })
 })
 filters.push(`${placed.map((_, i) => `[n${i}]`).join('')}amix=inputs=${placed.length}:duration=longest:normalize=0,` +
@@ -36,6 +40,7 @@ execFileSync(FFMPEG, ['-v', 'error', '-y', ...inputs, '-filter_complex', filters
 /* ---------- 2) ASS 字幕（底部居中，青色字） ---------- */
 const rows = []
 segments.forEach((seg, i) => {
+  if (seg.kind === 'endcard') return
   const line = lines.find((l) => l.id === seg.id)
   if (!line?.sub) return
   const end = (segments[i + 1]?.start ?? duration) - 0.12
@@ -59,12 +64,24 @@ const ass = [
 writeFileSync(join(build, 'captions.ass'), ass, 'utf8')
 
 /* ---------- 3) 混音：只要旁白，无配乐；无人声处静音 ---------- */
+/* ---------- 3) 混音：旁白 + 原创配乐（侧链压低、首尾淡入淡出） ---------- */
+// 输入顺序固定：0 = 旁白轨，1 = 配乐（可选）
 const mixGraph = [
   `[0:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,` +
-    `apad,atrim=duration=${duration}[mix]`,
+    `apad,atrim=duration=${duration}[voice]`,
+  ...(MUSIC
+    ? [
+        `[1:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,` +
+          `afade=t=in:st=0:d=1.2,afade=t=out:st=${(duration - 2.4).toFixed(2)}:d=2.4,volume=0.34[music]`,
+        `[voice]asplit=2[voiceMix][ctrl]`,
+        `[music][ctrl]sidechaincompress=threshold=0.03:ratio=7:attack=12:release=280:link=maximum[duck]`,
+        `[duck][voiceMix]amix=inputs=2:duration=longest:normalize=0,apad,atrim=duration=${duration}[mix]`,
+      ]
+    : [`[voice]apad,atrim=duration=${duration}[mix]`]),
 ].join(';')
 execFileSync(FFMPEG, ['-v', 'error', '-y',
   '-i', join(build, 'narration_full.wav'),
+  ...(MUSIC ? ['-stream_loop', '-1', '-i', MUSIC] : []),
   '-filter_complex', mixGraph, '-map', '[mix]', '-t', String(duration),
   '-ar', '48000', '-ac', '2', join(build, 'mix_raw.wav')], { stdio: 'inherit' })
 

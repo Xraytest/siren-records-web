@@ -1,6 +1,6 @@
 // 按「帧预算」录制线上站点的真实操作：每段要抓多少帧由该句旁白时长决定，
 // 抓完就把这段的时长平均分给这些帧。机器快慢不影响与旁白的对齐。
-// 主题：歌单 —— 创建 / 整张收录 / 单曲收录 / 排序 / 分享 / 发布 / 导出导入。
+// 主题：歌单自由流转（屏蔽伴奏 / 快捷键检索 / 导出文件 / 导入还原 / 快照分享 / 广场立碑）
 // 输出：capture/frames/*.jpg + capture/frames.json + capture/segments.json
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -8,7 +8,7 @@ import { join } from 'node:path'
 const ROOT = 'D:/WorkSpace/siren-records-web/promo'
 const OUT = join(ROOT, 'capture')
 const FRAMES = join(OUT, 'frames')
-const BASE = process.env.BASE_URL || 'https://siren-records-web.chengqing-2008.workers.dev'
+const BASE = process.env.BASE_URL || 'https://siren.neolx.ltd'
 const W = 1920
 const H = 1080
 const PROXY = process.env.PROXY_URL || ''
@@ -22,7 +22,7 @@ const token = (await readFile(join(ROOT, '.demo-token'), 'utf8').catch(() => '')
 
 await rm(FRAMES, { recursive: true, force: true })
 await mkdir(FRAMES, { recursive: true })
-// 每轮重建 profile：否则上一轮残留的歌单/播放状态会让画面从一开始就不是「干净」的。
+// 每轮重建 profile：避免上一轮的播放队列/搜索态污染开场画面
 await rm(join(OUT, 'profile'), { recursive: true, force: true })
 
 const { chromium } = await import('playwright')
@@ -42,6 +42,7 @@ await page.goto(`${BASE}/`, { waitUntil: 'networkidle' })
 let allFrames = []
 const segments = []
 let seg = null
+let exportedPath = null
 
 async function grab(gap = 90) {
   const name = `f-${String(allFrames.length).padStart(5, '0')}.jpg`
@@ -78,182 +79,125 @@ async function finish() {
   console.log(`${seg.id}: ${seg.frames.length} frames / ${seg.narration}s`)
 }
 
-/* ---------- s1 我的歌单：这是主角 ---------- */
-await page.goto(`${BASE}/#/library`, { waitUntil: 'networkidle' })
-await sleep(1000)
+/* ---------- s1 痛点：首页定格（文案改版后的新首页） ---------- */
 await begin('s1')
-await fillTo(0.35)
-await scrollBy(160, 10)
+await fillTo(0.55)
+await scrollBy(300, 14)
+await fillTo(0.9)
 await finish()
 
-/* ---------- s2 新建歌单：真填名称/描述/标签并创建 ---------- */
-await page.locator('.playlist-card--new').first().click()
-await page.waitForTimeout(700)
-await begin('s2')
-await fillTo(0.1)
-// 三个输入框按 DOM 顺序分别是 名称 input / 描述 textarea / 标签 input，
-// 用 union 选择器取 nth() 会拿错，所以分开定位。
-const nameInput = page.locator('.modal input[placeholder*="深夜航路"]').first()
-const descInput = page.locator('.modal textarea').first()
-const tagsInput = page.locator('.modal input[placeholder*="空格或逗号"]').first()
-await nameInput.click()
-await nameInput.type('夜航四十分钟', { delay: 110 })
-await grab(110)
-await fillTo(0.32)
-await descInput.click()
-await descInput.type('地铁到站之前，刚好放完的一张。', { delay: 80 })
-await grab(110)
-await fillTo(0.56)
-await tagsInput.click()
-await tagsInput.type('通勤 深夜', { delay: 110 })
-await grab(110)
-await fillTo(0.76)
-await page.locator('.modal-foot .btn--primary').first().click()
-// 创建成功必须落到 /#/playlist/<id>；没成功就再点一次，仍不成功就抛错，
-// 不要带着「没建出来」的状态继续录后面的收录戏。
-let created = false
-for (let attempt = 0; attempt < 2 && !created; attempt++) {
-  await page.waitForTimeout(1200)
-  created = /#\/playlist\//.test(page.url())
-  if (!created) await page.locator('.modal-foot .btn--primary').first().click().catch(() => {})
-}
-if (!created) throw new Error('新建歌单失败：没有进入 playlist 详情页')
-await grab(150)
-await fillTo(0.97)
-await finish()
-
-// 记下刚才创建的歌单地址，后面几段都在它身上演
-const playlistUrl = page.url()
-console.log(`playlist: ${playlistUrl}`)
-
-/* ---------- s3 整张收录：回档案 → 专辑 → 整张加入歌单 ---------- */
+/* ---------- s2 档案馆亮相：档案页 + 统计条 ---------- */
 await page.goto(`${BASE}/#/archive`, { waitUntil: 'networkidle' })
+await sleep(900)
+await begin('s2')
+await fillTo(0.2)
+await scrollBy(700, 16)
+await fillTo(0.9)
+await finish()
+
+/* ---------- s3 屏蔽伴奏开关 + ⌘K 秒搜 ---------- */
+await page.goto(`${BASE}/#/settings`, { waitUntil: 'networkidle' })
 await sleep(800)
 await begin('s3')
-await fillTo(0.15)
-const cover = page.locator('a[href*="#/album/"]').nth(1)
-if (await cover.count()) {
-  await cover.click()
+await fillTo(0.16)
+const toggle = page.locator('button[aria-label="屏蔽伴奏音乐"]').first()
+if (await toggle.count()) {
+  await toggle.click()
+  await page.waitForTimeout(700)
+  await grab(150)
+}
+await fillTo(0.42)
+// 真按 ⌘K / Ctrl+K 唤醒搜索面板
+await page.keyboard.press('Control+k')
+await page.waitForTimeout(900)
+await grab(160)
+await page.locator('.palette input').first().fill('月')
+await page.waitForTimeout(1000)
+await grab(170)
+await fillTo(0.66)
+// 从检索结果把一首歌加进歌单
+const palettePlus = page.locator('.palette-row .icon-btn, .palette-row button').nth(1)
+if (await palettePlus.count()) {
+  await palettePlus.click().catch(() => {})
+  await page.waitForTimeout(900)
+  await grab(150)
+}
+await fillTo(0.95)
+await finish()
+await page.keyboard.press('Escape').catch(() => {})
+await sleep(300)
+// 复原开关，避免污染本地偏好
+if (await toggle.count()) await toggle.click().catch(() => {})
+
+/* ---------- s4 导出：歌单页真点导出（触发下载） ---------- */
+await page.goto(`${BASE}/#/library`, { waitUntil: 'networkidle' })
+await sleep(900)
+await begin('s4')
+await fillTo(0.18)
+const openCard = page.locator('.playlist-card-title').first()
+if (await openCard.count()) {
+  await openCard.click()
   await page.waitForTimeout(1000)
   await grab(150)
 }
-await fillTo(0.5)
-const addWhole = page.locator('.hero-actions .btn').nth(1)
-if (await addWhole.count()) {
-  await addWhole.click()
-  await page.waitForTimeout(800)
-  await grab(150)
+await fillTo(0.45)
+const exportBtn = page.locator('.hero-actions .btn', { hasText: '导出' }).first()
+if (await exportBtn.count()) {
+  const dl = page.waitForEvent('download', { timeout: 15000 }).catch(() => null)
+  await exportBtn.click()
+  const file = await dl
+  if (file) {
+    exportedPath = join(OUT, 'roundtrip.json')
+    await file.saveAs(exportedPath)
+    await page.waitForTimeout(700)
+    await grab(170) // 导出 toast + 文件已落盘
+  }
 }
-await fillTo(0.82)
-// 选单里点刚才新建的那张（不再点 .first()，否则整张会被收进别的歌单，
-// 与旁白「进了你挑的那张」不符，也让后一段排序找不到内容）。
-const newRow = page.locator('.pick-row', { hasText: '夜航四十分钟' }).first()
-if (await newRow.count()) {
-  await newRow.click() // 真把整张收进「夜航四十分钟」
-  await page.waitForTimeout(900)
-  await grab(160)
-} else {
-  throw new Error('选单里没有刚新建的「夜航四十分钟」')
-}
-await fillTo(0.96)
+await fillTo(0.92)
 await finish()
-await page.keyboard.press('Escape').catch(() => {})
-await sleep(300)
 
-/* ---------- s4 单曲收录：曲目行 + 号 → 选歌单 ---------- */
-await begin('s4')
-await fillTo(0.2)
-const songPlus = page.locator('.song-row .song-actions button[title="加入歌单"]').first()
-if (await songPlus.count()) {
-  await songPlus.click()
-  await page.waitForTimeout(800)
-  await grab(150)
-}
-await fillTo(0.66)
-const pickNew = page.locator('.pick-row', { hasText: '夜航四十分钟' }).first()
-if (await pickNew.count()) {
-  await pickNew.click()
-  await page.waitForTimeout(900)
-  await grab(160)
-} else {
-  throw new Error('单曲收录时选单里没有「夜航四十分钟」')
-}
-await fillTo(0.95)
-await finish()
-await page.keyboard.press('Escape').catch(() => {})
-await sleep(300)
-
-/* ---------- s5 排序：进刚才那张歌单，真点上移 ---------- */
-await page.goto(playlistUrl, { waitUntil: 'networkidle' })
-await sleep(900)
+/* ---------- s5 导入还原 + 快照分享 ---------- */
 await begin('s5')
-await fillTo(0.25)
-const downBtn = page.locator('.song-row .song-actions button[title="上移"]').nth(1)
-if (await downBtn.count()) {
-  await downBtn.click()
-  await page.waitForTimeout(700)
-  await grab(140)
-}
-await fillTo(0.6)
-const downBtn2 = page.locator('.song-row .song-actions button[title="上移"]').nth(2)
-if (await downBtn2.count()) {
-  await downBtn2.click()
-  await page.waitForTimeout(700)
-  await grab(140)
-}
-await fillTo(0.95)
-await finish()
-
-/* ---------- s6 分享弹窗 ---------- */
-await begin('s6')
 const shareBtn = page.locator('.hero-actions .btn', { hasText: '分享' }).first()
 if (await shareBtn.count()) {
   await shareBtn.click()
-  await page.waitForTimeout(900)
+  await page.waitForTimeout(1000)
   await grab(160)
 }
-await fillTo(0.9)
-await finish()
+await fillTo(0.42)
 await page.keyboard.press('Escape').catch(() => {})
-await sleep(300)
+await sleep(200)
+// 回到歌单列表，把刚导出的文件原样导入（真实还原）
+await page.goto(`${BASE}/#/library`, { waitUntil: 'networkidle' })
+await sleep(800)
+await grab(150)
+const fileInput = page.locator('input[type="file"]').first()
+if (exportedPath && await fileInput.count()) {
+  await fileInput.setInputFiles(exportedPath)
+  await page.waitForTimeout(1400)
+  await grab(170) // 「已解析并载入 N 组声学序列」
+}
+await fillTo(0.95)
+await finish()
 
-/* ---------- s7 发布到广场 ---------- */
-await begin('s7')
+/* ---------- s6 发布到广场 + 片尾（片尾卡由 build_base 追加） ---------- */
+await page.goto(`${BASE}/#/library`, { waitUntil: 'networkidle' })
+await sleep(800)
+await begin('s6')
+await fillTo(0.25)
+const pubCard = page.locator('.playlist-card-title').first()
+if (await pubCard.count()) {
+  await pubCard.click()
+  await page.waitForTimeout(1000)
+  await grab(150)
+}
 const pubBtn = page.locator('.hero-actions .btn', { hasText: '发布' }).first()
 if (await pubBtn.count()) {
   await pubBtn.click()
-  await page.waitForTimeout(900)
+  await page.waitForTimeout(1000)
   await grab(160)
 }
-await fillTo(0.9)
-await finish()
-await page.keyboard.press('Escape').catch(() => {})
-await sleep(300)
-
-/* ---------- s8 我的歌单：真导出一次 → 真导入回来 ---------- */
-await page.goto(`${BASE}/#/library`, { waitUntil: 'networkidle' })
-await sleep(900)
-await begin('s8')
-await fillTo(0.22)
-const exportAllBtn = page.locator('.page-head .btn', { hasText: '导出全部' }).first()
-let exportedPath = null
-{
-  const download = page.waitForEvent('download', { timeout: 15000 }).catch(() => null)
-  await exportAllBtn.click()
-  const file = await download
-  if (!file) throw new Error('导出没有触发下载')
-  exportedPath = join(OUT, 'exported.json')
-  await file.saveAs(exportedPath)
-  await page.waitForTimeout(600)
-  await grab(160) // 真下载了一次，按钮态与 toast 都是真的
-}
-await fillTo(0.6)
-// 把刚导出的文件原样导入回去，证明「一首不差」
-const fileInput = page.locator('input[type="file"]').first()
-await fileInput.setInputFiles(exportedPath)
-await page.waitForTimeout(1200)
-await grab(160)
-await fillTo(0.92)
+await fillTo(0.95)
 await finish()
 
 await context.close()
