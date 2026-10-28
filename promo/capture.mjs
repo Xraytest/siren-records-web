@@ -35,9 +35,24 @@ const page = context.pages()[0] || (await context.newPage())
 page.setDefaultTimeout(30000)
 page.setDefaultNavigationTimeout(60000)
 
-await page.goto(`${BASE}/`, { waitUntil: 'domcontentloaded' })
+// 首屏偶发 ERR_CONNECTION_CLOSED（本地网络抖动），重试几次再放弃
+async function gotoHome(waitUntil = 'domcontentloaded') {
+  let lastError = null
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    try {
+      return await page.goto(`${BASE}/`, { waitUntil, timeout: 60000 })
+    } catch (error) {
+      lastError = error
+      console.log(`goto 第 ${attempt} 次失败：${error.message.split('\n')[0]}，1.5s 后重试`)
+      await sleep(1500)
+    }
+  }
+  throw lastError
+}
+
+await gotoHome()
 if (token) await page.evaluate((t) => localStorage.setItem('siren:token', t), token)
-await page.goto(`${BASE}/`, { waitUntil: 'networkidle' })
+await gotoHome('networkidle')
 
 let allFrames = []
 const segments = []

@@ -10,6 +10,7 @@ const build = join(here, 'build')
 const FFMPEG = process.env.FFMPEG || 'ffmpeg'
 const FFPROBE = process.env.FFPROBE || 'ffprobe'
 const MUSIC = process.env.MUSIC || null
+const BED = process.env.BED || null
 mkdirSync(build, { recursive: true })
 
 const LEAD = 0.3
@@ -63,16 +64,22 @@ const ass = [
 ].join('\n')
 writeFileSync(join(build, 'captions.ass'), ass, 'utf8')
 
-/* ---------- 3) 混音：只要旁白，无配乐；无人声处静音 ---------- */
-/* ---------- 3) 混音：旁白 + 原创配乐（侧链压低、首尾淡入淡出） ---------- */
-// 输入顺序固定：0 = 旁白轨，1 = 配乐（可选）
+/* ---------- 3) 混音：旁白 + 配乐（侧链压乐） ----------
+ * MUSIC：原始配乐文件，需要在组装时循环并做首尾淡入淡出（compose 产出的整段）
+ * BED   ：已剪好、已淡入淡出的成品音床（build_msr_bed.mjs 的产出），直接铺
+ */
+const musicInput = BED || MUSIC
+const useBed = Boolean(BED)
 const mixGraph = [
   `[0:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,` +
     `apad,atrim=duration=${duration}[voice]`,
-  ...(MUSIC
+  ...(musicInput
     ? [
-        `[1:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,` +
-          `afade=t=in:st=0:d=1.2,afade=t=out:st=${(duration - 2.4).toFixed(2)}:d=2.4,volume=0.34[music]`,
+        useBed
+          ? `[1:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,` +
+            `atrim=duration=${duration},volume=0.34[music]`
+          : `[1:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,` +
+            `afade=t=in:st=0:d=1.2,afade=t=out:st=${(duration - 2.4).toFixed(2)}:d=2.4,volume=0.34[music]`,
         `[voice]asplit=2[voiceMix][ctrl]`,
         `[music][ctrl]sidechaincompress=threshold=0.03:ratio=7:attack=12:release=280:link=maximum[duck]`,
         `[duck][voiceMix]amix=inputs=2:duration=longest:normalize=0,apad,atrim=duration=${duration}[mix]`,
@@ -81,7 +88,7 @@ const mixGraph = [
 ].join(';')
 execFileSync(FFMPEG, ['-v', 'error', '-y',
   '-i', join(build, 'narration_full.wav'),
-  ...(MUSIC ? ['-stream_loop', '-1', '-i', MUSIC] : []),
+  ...(musicInput ? (useBed ? ['-i', musicInput] : ['-stream_loop', '-1', '-i', musicInput]) : []),
   '-filter_complex', mixGraph, '-map', '[mix]', '-t', String(duration),
   '-ar', '48000', '-ac', '2', join(build, 'mix_raw.wav')], { stdio: 'inherit' })
 
