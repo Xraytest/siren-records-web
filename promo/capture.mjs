@@ -1,5 +1,6 @@
 // 按「帧预算」录制线上站点的真实操作：每段要抓多少帧由该句旁白时长决定，
 // 抓完就把这段的时长平均分给这些帧。机器快慢不影响与旁白的对齐。
+// 主题：一个好用的第三方塞壬唱片播放器 —— 重点演播放器本身。
 // 输出：capture/frames/*.jpg + capture/frames.json + capture/segments.json
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -21,6 +22,9 @@ const token = (await readFile(join(ROOT, '.demo-token'), 'utf8').catch(() => '')
 
 await rm(FRAMES, { recursive: true, force: true })
 await mkdir(FRAMES, { recursive: true })
+// 每次录制都用全新 profile：否则上一轮留下的播放队列会让底栏一开场就在播，
+// 而「播放器」这条故事线要的是 s4 点了「播放整张」之后底栏才出现。
+await rm(join(OUT, 'profile'), { recursive: true, force: true })
 
 const { chromium } = await import('playwright')
 const context = await chromium.launchPersistentContext(join(OUT, 'profile'), {
@@ -32,17 +36,15 @@ page.setDefaultTimeout(30000)
 page.setDefaultNavigationTimeout(60000)
 
 await page.goto(`${BASE}/`, { waitUntil: 'domcontentloaded' })
+// 清掉上次录制留在 localStorage 的播放状态，让底栏从「还没开始播」开始，
+// 到 s4 真点「播放整张」时才出现 —— 这才是播放器的故事线。
+await page.evaluate(() => localStorage.removeItem('siren:player'))
 if (token) await page.evaluate((t) => localStorage.setItem('siren:token', t), token)
+await page.goto(`${BASE}/`, { waitUntil: 'networkidle' })
 
 let allFrames = []
 const segments = []
 let seg = null
-
-async function begin(id) {
-  seg = { id, frames: [], narration: dur[id], budget: Math.max(6, Math.round((dur[id] + SLACK) * FPS)) }
-  segments.push(seg)
-  await grab()
-}
 
 async function grab(gap = 90) {
   const name = `f-${String(allFrames.length).padStart(5, '0')}.jpg`
@@ -53,9 +55,10 @@ async function grab(gap = 90) {
   await sleep(gap)
 }
 
-// 每次抓约 1/9 秒，刷新「连续帧」直到用完这段预算
-async function fill(count) {
-  for (let i = 0; i < count; i++) await grab()
+async function begin(id) {
+  seg = { id, frames: [], narration: dur[id], budget: Math.max(6, Math.round((dur[id] + SLACK) * FPS)) }
+  segments.push(seg)
+  await grab()
 }
 
 async function fillTo(fraction) {
@@ -78,23 +81,23 @@ async function finish() {
   console.log(`${seg.id}: ${seg.frames.length} frames / ${seg.narration}s`)
 }
 
-// s1 首页开场（纯停留）
+/* ---------- s1 首页开场 ---------- */
 await page.goto(`${BASE}/`, { waitUntil: 'networkidle' })
 await sleep(900)
 await begin('s1')
 await finish()
 
-// s2 首屏下滚 → 统计条
+/* ---------- s2 首屏下滚 → 统计条 ---------- */
 await begin('s2')
 await scrollBy(360, 14)
 await finish()
 
-// s3 档案：滚动 + 检索
+/* ---------- s3 档案：滚动 + 检索 ---------- */
 await page.goto(`${BASE}/#/archive`, { waitUntil: 'networkidle' })
 await sleep(800)
 await begin('s3')
 await fillTo(0.12)
-await scrollBy(700, 15)
+await scrollBy(680, 15)
 const search = page.locator('input[type="search"], input[placeholder*="搜索"]').first()
 if (await search.count()) {
   await search.click()
@@ -107,7 +110,7 @@ await finish()
 if (await search.count()) await search.fill('').catch(() => {})
 await sleep(250)
 
-// s4 打开专辑页
+/* ---------- s4 专辑页：播放整张 ---------- */
 await page.goto(`${BASE}/#/archive`, { waitUntil: 'networkidle' })
 await sleep(700)
 await begin('s4')
@@ -117,33 +120,75 @@ if (await cover.count()) {
   await page.waitForTimeout(900)
   await grab(150)
 }
-await fillTo(0.55)
-await scrollBy(520, 18)
-await fillTo(0.9)
+await fillTo(0.45)
+const playAlbum = page.locator('.hero-actions .btn--primary').first()
+if (await playAlbum.count()) {
+  await playAlbum.click() // 真点「播放整张」，进入真实播放态
+  await page.waitForTimeout(700)
+  await grab(140)
+}
+await fillTo(0.85)
 await finish()
 
-// s5 歌单
+/* ---------- s5 播放器本体：展开 → 歌词 → 队列 ---------- */
+await begin('s5')
+const bar = page.locator('.playerbar-track').first()
+if (await bar.count()) {
+  await bar.click()
+  await page.waitForTimeout(800)
+  await grab(140)
+}
+await fillTo(0.35)
+const lyricsBtn = page.locator('.player-view-panel .seg button').first()
+if (await lyricsBtn.count()) {
+  await lyricsBtn.click().catch(() => {})
+  await page.waitForTimeout(900)
+  await grab(160)
+}
+await fillTo(0.72)
+const queueBtn = page.locator('.player-view-panel .seg button').nth(1)
+if (await queueBtn.count()) {
+  await queueBtn.click().catch(() => {})
+  await page.waitForTimeout(700)
+  await grab(150)
+}
+await fillTo(0.95)
+await finish()
+await page.keyboard.press('Escape').catch(() => {})
+const closeBtn = page.locator('.player-view-head .icon-btn').first()
+if (await closeBtn.count()) await closeBtn.click().catch(() => {})
+await sleep(300)
+
+/* ---------- s6 歌单 ---------- */
 await page.goto(`${BASE}/#/library`, { waitUntil: 'networkidle' })
 await sleep(800)
-await begin('s5')
+await begin('s6')
 await fillTo(0.26)
 await scrollBy(230, 16)
 await finish()
 
-// s6 账号
-await page.goto(`${BASE}/#/account`, { waitUntil: 'networkidle' })
-await sleep(800)
-await begin('s6')
-await fillTo(0.28)
-await scrollBy(190, 15)
-await finish()
-
-// s7 广场
-await page.goto(`${BASE}/#/explore`, { waitUntil: 'networkidle' })
+/* ---------- s7 偏好设置：屏蔽伴奏开关 ---------- */
+await page.goto(`${BASE}/#/settings`, { waitUntil: 'networkidle' })
 await sleep(800)
 await begin('s7')
-await fillTo(0.5)
-await scrollBy(240, 12)
+await fillTo(0.4)
+const toggle = page.locator('button[aria-label="屏蔽伴奏音乐"]').first()
+if (await toggle.count()) {
+  await toggle.click()
+  await page.waitForTimeout(600)
+  await grab(140)
+}
+await fillTo(0.85)
+await finish()
+// 恢复开关，避免污染本地设置
+if (await toggle.count()) await toggle.click().catch(() => {})
+
+/* ---------- s8 账号 ---------- */
+await page.goto(`${BASE}/#/account`, { waitUntil: 'networkidle' })
+await sleep(800)
+await begin('s8')
+await fillTo(0.28)
+await scrollBy(190, 15)
 await finish()
 
 await context.close()

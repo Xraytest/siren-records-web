@@ -13,9 +13,9 @@ mkdirSync(build, { recursive: true })
 
 const { segments, fps } = JSON.parse(readFileSync(join(cap, 'segments.json'), 'utf8'))
 const timing = JSON.parse(readFileSync(join(here, 'narration', 'timing.json'), 'utf8'))
-const s8 = timing.lines.find((l) => l.id === 's8').seconds
-const ENDCARD = +(s8 + 1.6).toFixed(3)
-// 每段比旁白多留 0.3s：旁白在段内起音晚 0.3s，收尾正好落在段末，段间不留空档
+const end = timing.lines.at(-1)
+const ENDCARD = +(end.seconds + 1.6).toFixed(3)
+// 每段比旁白多留 LEAD：旁白在段内起音晚 LEAD，收尾正好落在段末，段间不留空档
 const LEAD = 0.3
 
 const lines = []
@@ -53,7 +53,7 @@ execFileSync(FFMPEG, ['-v', 'error', '-y', '-i', join(build, 'site.mp4'),
   '-movflags', '+faststart', join(build, 'base.mp4')],
 { stdio: 'inherit' })
 
-out.push({ id: 's8', start: +siteDuration.toFixed(3), duration: ENDCARD, kind: 'endcard' })
+out.push({ id: end.id, start: +siteDuration.toFixed(3), duration: ENDCARD, kind: 'endcard' })
 writeFileSync(join(build, 'segments_final.json'),
   JSON.stringify({ duration, siteDuration, endcard: ENDCARD, captureFps: fps, segments: out }, null, 2), 'utf8')
 console.log(JSON.stringify({ duration, siteDuration, endcard: ENDCARD, segments: out.map((s) => `${s.id}@${s.start}+${s.duration}`) }))

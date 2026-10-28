@@ -1,4 +1,4 @@
-// 组装成片：真实录屏 + GPT-SoVITS 旁白 + EAC 原创配乐(ducking) + ASS 字幕
+// 组装成片：真实录屏 + GPT-SoVITS 旁白 + ASS 字幕（无背景音乐）
 // 响度用「先测后补」的静态增益，避免单遍 loudnorm 的动态压缩把人声越压越小声。
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { execFileSync, spawnSync } from 'node:child_process'
@@ -9,8 +9,6 @@ const here = dirname(fileURLToPath(import.meta.url))
 const build = join(here, 'build')
 const FFMPEG = process.env.FFMPEG || 'ffmpeg'
 const FFPROBE = process.env.FFPROBE || 'ffprobe'
-const MUSIC = process.env.MUSIC
-if (!MUSIC) throw new Error('MUSIC env var (composed music.wav) is required')
 mkdirSync(build, { recursive: true })
 
 const LEAD = 0.3
@@ -60,17 +58,13 @@ const ass = [
 ].join('\n')
 writeFileSync(join(build, 'captions.ass'), ass, 'utf8')
 
-/* ---------- 3) 混音：旁白 + 配乐（侧链压低、首尾淡入淡出），先出 wav ---------- */
-const fadeOut = (duration - 2.4).toFixed(2)
+/* ---------- 3) 混音：只要旁白，无配乐；无人声处静音 ---------- */
 const mixGraph = [
-  `[1:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,` +
-    `afade=t=in:st=0:d=1.4,afade=t=out:st=${fadeOut}:d=2.4,volume=0.34[music]`,
-  `[0:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,asplit=2[voice][ctrl]`,
-  `[music][ctrl]sidechaincompress=threshold=0.03:ratio=7:attack=12:release=280:link=maximum[duck]`,
-  `[duck][voice]amix=inputs=2:duration=longest:normalize=0,apad,atrim=duration=${duration}[mix]`,
+  `[0:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,` +
+    `apad,atrim=duration=${duration}[mix]`,
 ].join(';')
 execFileSync(FFMPEG, ['-v', 'error', '-y',
-  '-i', join(build, 'narration_full.wav'), '-stream_loop', '-1', '-i', MUSIC,
+  '-i', join(build, 'narration_full.wav'),
   '-filter_complex', mixGraph, '-map', '[mix]', '-t', String(duration),
   '-ar', '48000', '-ac', '2', join(build, 'mix_raw.wav')], { stdio: 'inherit' })
 

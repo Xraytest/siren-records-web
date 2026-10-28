@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8" />
-<title>SIREN RECORDS · 片尾</title>
+<title>SIREN RECORDS · 播放器</title>
 <style>
   @font-face {
     font-family: 'Noto Sans SC';
@@ -21,12 +21,11 @@
   .stage {
     position: relative; width: 1920px; height: 1080px;
     display: flex; flex-direction: column; align-items: center; justify-content: center;
-    gap: 34px;
+    gap: 30px;
     background:
       radial-gradient(900px 520px at 50% 46%, rgba(160, 237, 255, 0.10), rgba(5, 6, 7, 0) 70%),
       #050607;
   }
-  /* 细网格与四角标记，延续站内的取景框语言 */
   .grid {
     position: absolute; inset: 0;
     background-image:
@@ -46,19 +45,20 @@
     color: rgba(160, 237, 255, 0.72); text-transform: uppercase;
   }
   .brand { display: flex; align-items: center; gap: 26px; }
-  .brand .word { font-size: 108px; font-weight: 500; letter-spacing: 10px; line-height: 1; }
+  .brand .word { font-size: 104px; font-weight: 500; letter-spacing: 9px; line-height: 1; }
   .diamond {
     width: 26px; height: 26px; background: #a0edff; transform: rotate(45deg);
     box-shadow: 0 0 26px rgba(160, 237, 255, 0.65);
   }
-  .rule { width: 760px; height: 1px; background: rgba(160, 237, 255, 0.28); }
+  .tagline { font-size: 34px; letter-spacing: 3px; color: rgba(232, 246, 255, 0.86); }
+  .rule { width: 820px; height: 1px; background: rgba(160, 237, 255, 0.28); }
   .url {
-    font-family: 'JetBrains Mono', monospace; font-size: 34px; letter-spacing: 1.6px;
+    font-family: 'JetBrains Mono', monospace; font-size: 32px; letter-spacing: 1.4px;
     color: #a0edff;
   }
   .meta {
-    display: flex; gap: 46px; font-family: 'JetBrains Mono', monospace;
-    font-size: 15px; letter-spacing: 3.4px; color: rgba(232, 246, 255, 0.44);
+    display: flex; gap: 40px; font-family: 'JetBrains Mono', monospace;
+    font-size: 15px; letter-spacing: 3.2px; color: rgba(232, 246, 255, 0.44);
     text-transform: uppercase;
   }
   .note { font-size: 19px; color: rgba(232, 246, 255, 0.42); letter-spacing: 2px; }
@@ -70,16 +70,17 @@
     <span class="corner tl"></span><span class="corner tr"></span>
     <span class="corner bl"></span><span class="corner br"></span>
 
-    <div class="kicker">Unofficial Archive · 塞壬唱片非官方档案</div>
+    <div class="kicker">Third-party Player · 第三方播放器</div>
     <div class="brand">
       <span class="word">SIREN</span>
       <span class="diamond"></span>
       <span class="word">RECORDS</span>
     </div>
+    <div class="tagline">一个好用的第三方塞壬唱片播放器</div>
     <div class="rule"></div>
     <div class="url">siren-records-web.chengqing-2008.workers.dev</div>
     <div class="meta">
-      <span>298 Albums</span><span>911 Tracks</span><span>Playlists · Share · Square</span>
+      <span>298 Albums</span><span>911 Tracks</span><span>Lyrics · Queue · Playlists</span>
     </div>
     <div class="note">曲库版权归 塞壬唱片 / 鹰角网络，本项目仅作前端技术演示</div>
   </div>
