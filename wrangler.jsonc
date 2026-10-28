@@ -13,6 +13,16 @@
   "observability": {
     "enabled": true
   },
+  // Custom domain: workers.dev is SNI-blocked on some networks, so the app is
+  // served from siren.neolx.ltd. workers.dev stays enabled for overseas access
+  // and for old links.
+  "workers_dev": true,
+  "routes": [
+    {
+      "pattern": "siren.neolx.ltd",
+      "custom_domain": true
+    }
+  ],
   "d1_databases": [
     {
       "binding": "DB",

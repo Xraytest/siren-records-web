@@ -1,14 +1,17 @@
 # 宣传片 v2 · 制作说明（歌单主题 · 配音无配乐）
 
-线上站：<https://siren-records-web.chengqing-2008.workers.dev>
+线上站：<https://siren.neolx.ltd>（备用：<https://siren-records-web.chengqing-2008.workers.dev>）
 成片：`promo/siren-promo-v2.mp4`（1920×1080 / 30fps / 47.5s / H.264 + AAC 48kHz）
 
 主题：**方便的歌单创建、收录、排序、分享、导入导出**。全片只有旁白，没有背景音乐。
 
 ## 画面：线上站真实操作
 
-`capture.mjs` 用 Playwright 驱动 Edge 访问线上 workers.dev（经本机 `http://127.0.0.1:10808` 代理），
-带演示账号 `demo_archive` 的登录态。每轮录制都会重建 profile，并且**在录制前清空上一轮留在 D1 里的同名歌单**，
+`capture.mjs` 用 Playwright 驱动 Edge 访问 **线上站**，带演示账号 `demo_archive` 的登录态。
+站点绑定了自有域名 `siren.neolx.ltd`，**本机直连即可访问，不需要代理**；早期录制走 workers.dev
+时受 DNS 污染影响必须经 `127.0.0.1:10808`，所以 `PROXY_URL` 现在可省略。
+每轮录制都会重建 profile，并且在录制前清空上一轮留在 D1 里的同名歌单，
+否则 s1 的「我的歌单」里会已经躺着「夜航四十分钟」，与紧接着的「新建一张」自相矛盾。每轮录制都会重建 profile，并且**在录制前清空上一轮留在 D1 里的同名歌单**，
 否则 s1 的「我的歌单」里会已经躺着「夜航四十分钟」，与紧接着的「新建一张」自相矛盾。
 
 | 段 | 时长 | 真实动作 |
@@ -63,10 +66,12 @@
 
 ```bash
 cd promo
-PROXY_URL=http://127.0.0.1:10808 node capture.mjs        # 真实操作抓帧（会重建 profile 与 frames）
+node capture.mjs                                          # 真实操作抓帧（会重建 profile 与 frames）
 FFMPEG=... node build_base.mjs                            # 拼帧 + 片尾卡 → build/base.mp4
 FFMPEG=... FFPROBE=... node assemble.mjs                  # 旁白 + 字幕，无配乐
 ```
+
+若换到仍需代理的网络，前面加 `PROXY_URL=http://127.0.0.1:10808`。
 
 ## 已知限制与副作用
 
@@ -75,4 +80,18 @@ FFMPEG=... FFPROBE=... node assemble.mjs                  # 旁白 + 字幕，�
   录制后已把重复项清掉、把演示歌单恢复为原始状态；演示账号现有 4 张歌单：
   深夜循环 4 首 / 通勤四十分钟 4 首 / 写代码用 3 首 / 夜航四十分钟 2 首。
 - 站点页脚的「ARCHIVE BUILD / 2026-10-22」是站点自身构建戳。
-- 录制期间本机 ProxyGate 网关（65532）未运行，改用 `127.0.0.1:10808`。
+
+## 域名：workers.dev 为什么访问不了
+
+实测确认是 **DNS 污染 + SNI 阻断**，不是 Cloudflare 整体不可达：
+
+| 检查 | 结果 |
+|---|---|
+| 本地 DNS 解析 `*.workers.dev` | 返回 `69.171.247.71`（Facebook 段假地址） |
+| 经 DoH 取真实 IP | `172.67.177.175` / `104.21.35.169`（Cloudflare） |
+| 直连真实 IP、SNI 仍为 workers.dev | TCP 通但 TLS 握手被重置（`HTTP 000`） |
+| 直连 `cloudflare.com` | HTTP 200，正常 |
+| 直连 `neolx.ltd`（同为 CF 回源） | HTTP 200，正常 |
+
+结论：**换域名有效**，因为阻断是按域名/SNI 生效，换掉被阻断的那个名字即可绕过。
+绑定后同一套 Worker、同一个 D1、同一份资源，只多一条 `routes.custom_domain`。

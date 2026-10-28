@@ -39,11 +39,13 @@ npm run build        # 输出 dist/
 
 ## Cloudflare 部署
 
-线上地址：<https://siren-records-web.chengqing-2008.workers.dev>
+线上地址：<https://siren.neolx.ltd>
+备用地址：<https://siren-records-web.chengqing-2008.workers.dev>（部分网络会把 `workers.dev` 整个域按 SNI 阻断，故主域用自有域名）
 
 - Worker 名 `siren-records-web`，入口 `worker/index.mjs`，配置在 `wrangler.jsonc`。
 - 静态资源用 Assets 绑定（`env.ASSETS`）+ `single-page-application` 兜底，`/` 与任意前端路由都返回 `index.html`，`/api/*` 优先命中 Worker。
 - 数据库用 D1（库名 `siren-records`），schema 在 `migrations/0001_init.sql`。
+- 自定义域在 `wrangler.jsonc` 的 `routes` 里以 `custom_domain: true` 声明，Cloudflare 会自动签发并续期证书；域名需先在该账号下托管 DNS。
 
 ```bash
 npx wrangler login                                   # 首次授权
