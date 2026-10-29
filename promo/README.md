@@ -1,26 +1,19 @@
-# 宣传片 · 制作说明（歌单自由流转 · 配乐改用 MSR 曲目）
+# 宣传片 · 制作说明（歌单自由流转）
 
 线上站：<https://siren.neolx.ltd>（备用：<https://siren-records-web.chengqing-2008.workers.dev>）
-成片：`promo/siren-promo-v2.mp4`（1920×1080 / 30fps / 67.4s / H.264 + AAC 48kHz）
 
-主题：**歌单自由流转**——导出本地文件、导入一秒还原、只读快照免登录分享、广场立碑。
+成片共两版，画面与旁白完全相同，只差配乐：
 
-## 配乐：塞壬唱片（MSR）曲目
-
-按你的要求，BGM 全部换成 MSR 官方音频，**不再使用合成器配乐**。曲目经站点自己的
-`/api/audio/<cid>` 换取官方 CDN 签名地址后下载（`fetch_msr.mjs`），未做任何剪辑以外的处理。
-
-| 时间段 | 曲目 | 说明 |
+| 文件 | 配乐 | 大小 |
 |---|---|---|
-| 00:00 – 00:13 | **愚人曲**（专辑《愚人号OST》，cid 953915） | 前奏 1.6s 淡入，末尾 1.2s 淡出交接 |
-| 00:13 – 01:07 | **Radiant**（cid 048738） | 鼓点清楚，用于中后段踩点；1.2s `acrossfade` 交叉，整体 2.4s 淡出 |
+| `siren-promo-msr-bgm.mp4` | MSR 曲目：《愚人曲》前奏 0–13s →《Radiant》13s 至结尾 | 10.4 MB |
+| `siren-promo-no-bgm.mp4` | **无配乐**，只有旁白 | 9.9 MB |
 
-另下载了 **Speed of Light**（cid 880374）作备选，最终未使用，已删除。
-剪好的音床在 `build/msr_bed.wav`，由 `build_msr_bed.mjs` 生成。
+均为 1920×1080 / 30fps / 67.4s / H.264 + AAC 48kHz。
 
-> 版权提示：MSR 曲库版权归塞壬唱片 / 鹰角网络。这条片子按你的决定使用了原曲，
-> 对外发布时建议保留片尾与简介里的版权声明；如需彻底规避风险，可随时切回原创配乐
-> （`assemble.mjs` 同时支持 `MUSIC` 与 `BED` 两种入参）。
+## 主题
+
+**歌单自由流转**——导出本地文件、导入一秒还原、只读快照免登录分享、广场立碑。
 
 ## 旁白：本地 GPT-SoVITS（192.168.1.12:9880）
 
@@ -52,23 +45,26 @@
 | s6 | 11.68s | 发布弹窗（发布到公开广场） |
 | endcard | 4.20s | `endcard.html`：EXPORT / IMPORT / SNAPSHOT / SHARE + 域名 |
 
-## 混音与响度
+## 两版的混音差异
 
-- BGM 音量 0.34，`sidechaincompress`（threshold 0.03 / ratio 7）做人声压乐。
-- 先量混音（-18.0 LUFS / TP -4.7），补 +2.0 dB 静态增益 + `alimiter=0.94`；
-  成片 **I -15.5 LUFS / True Peak -2.1 dBFS**。
-- 实测响度曲线：旁白段 mean 约 -17~-21dB，段间因侧链释放回升到 -15~-19dB，
-  片尾卡无旁白时 BGM 单独在场 -15.9dB，尾部淡出至 -32dB。
+- **有配乐版**：BGM 音量 0.34 + `sidechaincompress` 侧链压乐；BGM 由 `fetch_msr.mjs` 从官方 CDN 下载、
+  `build_msr_bed.mjs` 剪切（愚人曲前奏 1.6s 淡入 → 1.2s `acrossfade` 交接到 Radiant → 整体 2.4s 淡出）。
+- **无配乐版**：只输出旁白轨。旁白结束后（63.18s 起）为数字静音（-91dB），
+  段间也是真静音；因每句旁白都精确落在段末，没有音乐填充也不显得断。
+
+两版响度一致：先量混音再补静态增益 + `alimiter=0.94`，成片 **I -15.5 LUFS / True Peak -2.1 dBFS**（无配乐版 TP -2.7 dBFS）。
 
 ## 复现
 
 ```bash
 cd promo
-node fetch_msr.mjs                                  # 下载 MSR 曲目（经站点 /api/audio 换签名地址）
-FFMPEG=... node build_msr_bed.mjs                   # 剪 BGM：愚人曲前奏 → Radiant，输出 build/msr_bed.wav
-node capture.mjs                                    # 抓帧（BASE_URL 默认 siren.neolx.ltd）
-FFMPEG=... node build_base.mjs                      # 拼帧 + 片尾卡
-FFMPEG=... FFPROBE=... BED=build/msr_bed.wav node assemble.mjs   # 用 MSR 音床终混
+node fetch_msr.mjs                    # 仅配乐版需要：下载 MSR 曲目
+FFMPEG=... node build_msr_bed.mjs     # 仅配乐版需要：剪 BGM → build/msr_bed.wav
+node capture.mjs                      # 抓帧（BASE_URL 默认 siren.neolx.ltd）
+FFMPEG=... node build_base.mjs        # 拼帧 + 片尾卡 → build/base.mp4
+
+FFMPEG=... FFPROBE=... node assemble.mjs                              # 无配乐版
+FFMPEG=... FFPROBE=... BED=build/msr_bed.wav node assemble.mjs        # MSR 配乐版
 ```
 
 ## 已知限制
@@ -78,3 +74,4 @@ FFMPEG=... FFPROBE=... BED=build/msr_bed.wav node assemble.mjs   # 用 MSR 音�
 - 首屏偶发 `ERR_CONNECTION_CLOSED`，`capture.mjs` 已加重试（4 次 × 1.5s）。
 - 录制会在 D1 真实创建/导入歌单，已清理重复项并恢复演示歌单原始状态。
 - 站点页脚的「ARCHIVE BUILD / 2026.10.22」是曲库快照自身时间戳，不随部署刷新。
+- MSR 曲目版权归塞壬唱片 / 鹰角网络；配乐版对外发布建议保留片尾与简介的版权声明。
