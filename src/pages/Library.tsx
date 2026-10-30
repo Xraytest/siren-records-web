@@ -79,8 +79,9 @@ export function Library() {
           <span className="kicker">PLAYLISTS / 02</span>
           <h1>我的歌单</h1>
           <p className="page-sub">
-            <strong>100% 自由流转的私人声学序列。</strong>
-            跨专辑挑曲、重排轨序、命名封存。你的歌单不被任何单一平台绑架——支持随时导出为便携档案文件离线保存、一键导入还原，或生成只读快照与分享码跨端传递。
+            <strong>100% 自由流转的私人原声序列。</strong>
+            曲目直连塞壬唱片原站音源，无需向流媒体平台的转码音质妥协——在这里跨专辑挑曲、重排轨序、命名封存，
+            支持随时导出为便携档案文件离线保存、一键导入还原，或生成只读快照与分享码跨端传递。
           </p>
         </div>
         <div className="toolbar-right">

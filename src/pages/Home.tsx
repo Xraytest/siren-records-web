@@ -52,14 +52,14 @@ export function Home() {
               <span className="outline">RECORDS</span>
             </h1>
             <p className="hero-lead">
-              <strong>一座为塞壬唱片建立的私人声学档案馆。</strong>
+              <strong>一座直连塞壬唱片原站的私人原声档案馆。</strong>
               检索 {catalog ? catalog.catalog.albums.length : '···'} 张专辑、
-              {catalog ? catalog.all.length : '···'} 首曲目——在这里自由编排你的专属歌单，
+              {catalog ? catalog.all.length : '···'} 首原站原声曲目——在这里自由编排你的专属歌单，
               封装为便携档案随身携带，或将这段频率完好地交给下一个人。
             </p>
             <div className="hero-actions">
               <Link to="/archive" className="btn btn--primary">
-                接入声学档案 <IconArrow size={14} />
+                接入原声档案 <IconArrow size={14} />
               </Link>
               <Link to="/library" className="btn">
                 编排 / 导入歌单

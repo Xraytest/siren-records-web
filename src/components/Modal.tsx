@@ -1,4 +1,5 @@
 import { useEffect, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { IconClose } from './Icons'
 
 interface ModalProps {
@@ -28,7 +29,10 @@ export function Modal({ open, onClose, title, kicker, children, wide, footer }: 
 
   if (!open) return null
 
-  return (
+  // 挂到 body：pageIn 等入场动画进行中 .page 带 transform，会把内部
+  // position:fixed 的包含块劫持成整张长页，弹窗就会被居中到页面中部
+  // （视口之外）。Portal 到 body 后彻底脱离 transformed 祖先。
+  return createPortal(
     <div className="modal-root" role="dialog" aria-modal="true" aria-label={title}>
       <button className="modal-backdrop" aria-label="关闭" onClick={onClose} />
       <div className={`modal ${wide ? 'modal--wide' : ''}`}>
@@ -48,6 +52,7 @@ export function Modal({ open, onClose, title, kicker, children, wide, footer }: 
         <div className="modal-body">{children}</div>
         {footer && <footer className="modal-foot">{footer}</footer>}
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }
