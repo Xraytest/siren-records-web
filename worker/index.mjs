@@ -32,6 +32,9 @@ function json(status, payload, extraHeaders = {}) {
 }
 
 async function readJson(request) {
+  // 先看声明长度再读：chunked 的恶意大包不会被整个读进 isolate 内存再丢
+  const declared = Number(request.headers.get('content-length') || 0)
+  if (declared > 2 * 1024 * 1024) throw new HttpError(413, '请求体过大')
   const text = await request.text()
   if (text.length > 2 * 1024 * 1024) throw new HttpError(413, '请求体过大')
   if (!text) return {}
@@ -132,10 +135,12 @@ async function hashPassword(password, salt) {
   return hex(bits)
 }
 
+// 长度不同也走完整循环：避免用响应时间泄露令牌长度（提前返回会暴露「前缀比对到第几位」）。
 function safeEqual(a, b) {
-  if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false
-  let diff = 0
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i)
+  if (typeof a !== 'string' || typeof b !== 'string') return false
+  const n = Math.max(a.length, b.length)
+  let diff = a.length ^ b.length
+  for (let i = 0; i < n; i++) diff |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0)
   return diff === 0
 }
 
@@ -158,9 +163,16 @@ const AUTH_WINDOW_MS = 60_000
 const AUTH_MAX_PER_WINDOW = 20
 const authHits = new Map()
 
+// Map 键是客户端 IP，长期运行会累积已过期的条目；超过阈值时做一次懒清理。
+function pruneHits(map, now) {
+  if (map.size < 2048) return
+  for (const [key, hit] of map) if (hit.reset < now) map.delete(key)
+}
+
 function authAllowed(request) {
   const key = request.headers.get('CF-Connecting-IP') || 'unknown'
   const now = Date.now()
+  pruneHits(authHits, now)
   const hit = authHits.get(key)
   if (!hit || hit.reset < now) {
     authHits.set(key, { reset: now + AUTH_WINDOW_MS, n: 1 })
@@ -188,6 +200,7 @@ const backupHits = new Map()
 function backupAllowed(request) {
   const key = request.headers.get('CF-Connecting-IP') || 'unknown'
   const now = Date.now()
+  pruneHits(backupHits, now)
   const hit = backupHits.get(key)
   if (!hit || hit.reset < now) {
     backupHits.set(key, { reset: now + BACKUP_WINDOW_MS, n: 1 })
