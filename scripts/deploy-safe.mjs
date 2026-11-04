@@ -139,12 +139,19 @@ function timestamp() {
 /** 线上真实行数（拿不到就返回 null，调用方降级） */
 function liveCounts() {
   const sql = `SELECT ${TABLES.map((t) => `(SELECT COUNT(*) FROM ${t}) AS ${t}`).join(', ')}`
-  const result = run(
-    npx,
-    ['wrangler', 'd1', 'execute', DB_NAME, '--remote', '--json', `--command=${sql}`],
-    { capture: true, allowFailure: true },
-  )
-  if (!result.ok) return null
+  // 两条约束一起把这里逼成「自己拼一条命令行」：
+  //  1. `--file` 批量执行只返回 "Total queries executed"，不返回 SELECT 结果（实测）；
+  //  2. run() 拒绝含空白的参数（Windows 经 shell 拼接会把 SQL 撕成多段）。
+  // SQL 只由常量 TABLES 拼成，不含引号/百分号/感叹号，套一层引号传给 shell 是安全的。
+  const quoted = process.platform === 'win32' ? `"${sql}"` : `'${sql}'`
+  const line = `${npx} wrangler d1 execute ${DB_NAME} --remote --json --command=${quoted}`
+  const result = spawnSync(line, {
+    cwd: ROOT,
+    shell: true,
+    encoding: 'utf8',
+    env: { ...process.env, WRANGLER_SEND_METRICS: 'false' },
+  })
+  if (result.error || result.status !== 0) return null
   try {
     const start = result.stdout.indexOf('[')
     const end = result.stdout.lastIndexOf(']')
@@ -293,7 +300,9 @@ async function liveCheck() {
 
 /* ---------- 主流程 ---------- */
 
-inspectMigrations()
+// --backup-only 只导出、不 apply 迁移，因此不做迁移闸门（否则 db:migrate 的预备份
+// 会因为「待应用迁移含 DELETE」而自我否决——闸门已在 migrate.mjs 里先跑过一次）。
+if (!backupOnly) inspectMigrations()
 if (checkOnly) {
   log('仅检查模式（--check）：未备份、未构建、未发布')
   process.exit(0)
