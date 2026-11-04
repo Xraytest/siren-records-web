@@ -39,3 +39,6 @@ promo/capture/profile
 promo/build/
 promo/qa/
 promo/.demo-token
+
+# D1 remote backups (user data, never commit)
+backups/

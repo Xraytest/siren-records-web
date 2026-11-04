@@ -1,0 +1,14 @@
+[Unit]
+Description=每日拉取 SIREN RECORDS 云端数据库备份
+Documentation=https://siren.neolx.ltd
+
+[Timer]
+# 04:17 低峰执行：D1 导出会短暂影响数据库可用性，避开访问高峰
+OnCalendar=*-*-* 04:17:00
+RandomizedDelaySec=300
+AccuracySec=1min
+Persistent=true
+Unit=siren-d1-backup.service
+
+[Install]
+WantedBy=timers.target

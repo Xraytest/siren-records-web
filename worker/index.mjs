@@ -16,6 +16,8 @@ class HttpError extends Error {
   }
 }
 
+const HSTS = 'max-age=31536000; includeSubDomains'
+
 function json(status, payload, extraHeaders = {}) {
   return new Response(JSON.stringify(payload), {
     status,
@@ -23,6 +25,7 @@ function json(status, payload, extraHeaders = {}) {
       'Content-Type': 'application/json; charset=utf-8',
       'Cache-Control': 'no-store',
       'X-Content-Type-Options': 'nosniff',
+      'Strict-Transport-Security': HSTS,
       ...extraHeaders,
     },
   })
@@ -76,7 +79,7 @@ function toPlaylist(row) {
 }
 
 function clipText(value, max = 2000) {
-  return typeof value === 'string' ? value.slice(0, max) : ''
+  return typeof value === 'string' ? value.replace(/\u0000/g, '').slice(0, max) : ''
 }
 
 function cidList(value) {
@@ -173,6 +176,130 @@ function makeIdentity(name) {
     handle: name.toLowerCase().replace(/\s+/g, '_'),
   }
 }
+
+/* ---------- 数据库导出（供 NetCenter 定期备份拉取） ---------- */
+
+// 令牌由 `wrangler secret put BACKUP_TOKEN` 注入；未配置时接口直接 404，等于不存在。
+const BACKUP_MIN_TOKEN = 32
+const BACKUP_WINDOW_MS = 60 * 60_000
+const BACKUP_MAX_PER_WINDOW = 10
+const backupHits = new Map()
+
+function backupAllowed(request) {
+  const key = request.headers.get('CF-Connecting-IP') || 'unknown'
+  const now = Date.now()
+  const hit = backupHits.get(key)
+  if (!hit || hit.reset < now) {
+    backupHits.set(key, { reset: now + BACKUP_WINDOW_MS, n: 1 })
+    return true
+  }
+  hit.n += 1
+  return hit.n <= BACKUP_MAX_PER_WINDOW
+}
+
+const BACKUP_TABLES = ['users', 'sessions', 'playlists']
+const BACKUP_PAGE = 500
+
+// 与 migrations/0001_init.sql 保持一致：备份自带建表语句，可独立恢复。
+const BACKUP_SCHEMA = `CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  handle TEXT NOT NULL,
+  bio TEXT NOT NULL DEFAULT '',
+  salt TEXT NOT NULL,
+  hash TEXT NOT NULL,
+  createdAt INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS users_name ON users(name COLLATE NOCASE);
+CREATE TABLE IF NOT EXISTS sessions (
+  token TEXT PRIMARY KEY,
+  userId TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  createdAt INTEGER NOT NULL,
+  expiresAt INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS playlists (
+  id TEXT PRIMARY KEY,
+  userId TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  tags TEXT NOT NULL DEFAULT '[]',
+  coverSongCid TEXT,
+  cover TEXT,
+  songs TEXT NOT NULL DEFAULT '[]',
+  createdAt INTEGER NOT NULL,
+  updatedAt INTEGER NOT NULL,
+  publishedAt INTEGER,
+  publishCode TEXT
+);
+CREATE INDEX IF NOT EXISTS playlists_user ON playlists(userId, updatedAt DESC);
+CREATE INDEX IF NOT EXISTS playlists_published ON playlists(publishedAt DESC);`
+
+function sqlLiteral(value) {
+  if (value === null || value === undefined) return 'NULL'
+  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : 'NULL'
+  if (typeof value === 'boolean') return value ? '1' : '0'
+  if (value instanceof Uint8Array) {
+    return `X'${[...value].map((b) => b.toString(16).padStart(2, '0')).join('')}'`
+  }
+  if (value instanceof ArrayBuffer) {
+    return `X'${[...new Uint8Array(value)].map((b) => b.toString(16).padStart(2, '0')).join('')}'`
+  }
+  // 单引号按 SQL 规则双写；NUL 没法直接写进字面量，用 char(0) 拼接保证逐字节还原
+  return sqlText(value)
+}
+
+function sqlText(value) {
+  const text = String(value)
+  if (!text.includes('\u0000')) return `'${text.replace(/'/g, "''")}'`
+  const parts = text.split('\u0000').map((piece) => `'${piece.replace(/'/g, "''")}'`)
+  return `(${parts.join(' || char(0) || ')})`
+}
+
+function asciiHeader(value) {
+  return String(value).replace(/[^\x20-\x7e]/g, '')
+}
+
+async function dumpDatabase(env, now = Date.now()) {
+  const lines = []
+  const counts = {}
+  lines.push('-- SIREN RECORDS · Cloudflare D1 backup')
+  lines.push(`-- generated_at: ${new Date(now).toISOString()}`)
+  lines.push('-- schema: 0001_init')
+  lines.push('PRAGMA foreign_keys=OFF;')
+  lines.push('BEGIN TRANSACTION;')
+  lines.push(BACKUP_SCHEMA)
+  for (const table of BACKUP_TABLES) {
+    lines.push(`DELETE FROM ${table};`)
+    // keyset 分页（rowid > last）而不是 OFFSET：备份期间有新行插入时不会跳行/重复
+    let lastRowid = -1
+    let count = 0
+    for (;;) {
+      const { results } = await env.DB.prepare(
+        `SELECT rowid AS __rowid, * FROM ${table} WHERE rowid > ? ORDER BY rowid LIMIT ?`,
+      )
+        .bind(lastRowid, BACKUP_PAGE)
+        .all()
+      const rows = results || []
+      for (const row of rows) {
+        lastRowid = row.__rowid
+        count++
+        const cols = Object.keys(row).filter((c) => c !== '__rowid')
+        lines.push(`INSERT INTO ${table} (${cols.join(', ')}) VALUES (${cols.map((c) => sqlLiteral(row[c])).join(', ')});`)
+      }
+      if (rows.length < BACKUP_PAGE) break
+    }
+    counts[table] = count
+  }
+  lines.push('COMMIT;')
+  lines.push(`-- END OF DUMP tables=${BACKUP_TABLES.map((t) => `${t}:${counts[t]}`).join(',')}`)
+  return { sql: `${lines.join('\n')}\n`, counts }
+}
+
+async function sha256Hex(text) {
+  const digest = await crypto.subtle.digest('SHA-256', enc.encode(text))
+  return hex(digest)
+}
+
 
 /* ---------- 会话 ---------- */
 
@@ -534,6 +661,33 @@ async function handleApi(request, env, url) {
     throw new HttpError(405, '不支持的方法')
   }
 
+  // --- backup：运维备份用的整库导出，必须带 Bearer BACKUP_TOKEN ---
+  if (parts[1] === 'backup' && parts[2] === 'dump') {
+    if (method !== 'GET') throw new HttpError(405, '不支持的方法')
+    const configured = typeof env.BACKUP_TOKEN === 'string' ? env.BACKUP_TOKEN.trim() : ''
+    // 没配密钥时按「接口不存在」处理，不泄露这个入口的存在
+    if (configured.length < BACKUP_MIN_TOKEN) throw new HttpError(404, '接口不存在')
+    const token = bearerToken(request)
+    if (!token || !safeEqual(token, configured)) throw new HttpError(401, '未授权')
+    if (!backupAllowed(request)) throw new HttpError(429, '请求过于频繁，请稍后再试')
+    const dump = await dumpDatabase(env)
+    const digest = await sha256Hex(dump.sql)
+    return new Response(dump.sql, {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/sql; charset=utf-8',
+        'Cache-Control': 'no-store',
+        'X-Content-Type-Options': 'nosniff',
+        'Strict-Transport-Security': HSTS,
+        'Referrer-Policy': 'no-referrer',
+        'X-Backup-Sha256': digest,
+        'X-Backup-Bytes': String(enc.encode(dump.sql).byteLength),
+        'X-Backup-Tables': asciiHeader(BACKUP_TABLES.map((t) => `${t}:${dump.counts[t]}`).join(',')),
+        'X-Backup-At': new Date().toISOString(),
+      },
+    })
+  }
+
   // --- audio：官方音频地址带时效签名，需在播放时向官方接口换取新地址 ---
   if (parts[1] === 'audio' && parts[2] && (method === 'GET' || method === 'HEAD')) {
     const cid = parts[2]
@@ -602,6 +756,12 @@ export default {
         )
         headers.set('X-Frame-Options', 'DENY')
         headers.set('Referrer-Policy', 'no-referrer')
+        headers.set('X-Content-Type-Options', 'nosniff')
+        headers.set('Strict-Transport-Security', HSTS)
+        if (url.pathname.startsWith('/assets/')) {
+          // Vite 产物文件名带内容哈希，可以放心长缓存；HTML/图标仍走默认校验
+          headers.set('Cache-Control', 'public, max-age=31536000, immutable')
+        }
         return new Response(res.body, { status: res.status, statusText: res.statusText, headers })
       }
       return res

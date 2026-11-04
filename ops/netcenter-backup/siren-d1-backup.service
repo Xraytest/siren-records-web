@@ -1,0 +1,33 @@
+[Unit]
+Description=SIREN RECORDS 云端 D1 数据库备份（拉取 + 校验 + 轮转）
+Documentation=https://siren.neolx.ltd
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=3600
+StartLimitBurst=5
+
+[Service]
+Type=oneshot
+SyslogIdentifier=siren-d1-backup
+WorkingDirectory=%h/siren-backup
+ExecStart=/usr/bin/env bash %h/siren-backup/backup-d1.sh
+TimeoutStartSec=900
+Nice=10
+IOSchedulingClass=idle
+
+# 最小权限沙箱（与 frpc-ali01.service 同风格）
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/siren-backup
+ProtectKernelTunables=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryMax=256M
+TasksMax=64

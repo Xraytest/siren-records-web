@@ -1,7 +1,7 @@
 import { createReadStream } from 'node:fs'
 import { mkdir, readFile, stat } from 'node:fs/promises'
 import { createServer } from 'node:http'
-import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
+import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 import path from 'node:path'
 
@@ -120,7 +120,7 @@ function toPlaylist(row) {
 }
 
 function clipText(value, max = 2000) {
-  return typeof value === 'string' ? value.slice(0, max) : ''
+  return typeof value === 'string' ? value.replace(/\u0000/g, '').slice(0, max) : ''
 }
 
 function cidList(value) {
@@ -211,6 +211,98 @@ function requireUser(req) {
 
 function userCount() {
   return db.prepare('SELECT COUNT(*) AS n FROM users').get().n
+}
+
+/* ---------- 数据库导出（本地镜像：与 Worker /api/backup/dump 同一契约） ---------- */
+
+const BACKUP_MIN_TOKEN = 32
+const BACKUP_WINDOW_MS = 60 * 60_000
+const BACKUP_MAX_PER_WINDOW = 10
+const backupHits = new Map()
+
+function backupAllowed(req) {
+  const key = req.socket.remoteAddress || 'unknown'
+  const now = Date.now()
+  const hit = backupHits.get(key)
+  if (!hit || hit.reset < now) {
+    backupHits.set(key, { reset: now + BACKUP_WINDOW_MS, n: 1 })
+    return true
+  }
+  hit.n += 1
+  return hit.n <= BACKUP_MAX_PER_WINDOW
+}
+
+const BACKUP_TABLES = ['users', 'sessions', 'playlists']
+const BACKUP_SCHEMA = `CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  handle TEXT NOT NULL,
+  bio TEXT NOT NULL DEFAULT '',
+  salt TEXT NOT NULL,
+  hash TEXT NOT NULL,
+  createdAt INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS users_name ON users(name COLLATE NOCASE);
+CREATE TABLE IF NOT EXISTS sessions (
+  token TEXT PRIMARY KEY,
+  userId TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  createdAt INTEGER NOT NULL,
+  expiresAt INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS playlists (
+  id TEXT PRIMARY KEY,
+  userId TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  tags TEXT NOT NULL DEFAULT '[]',
+  coverSongCid TEXT,
+  cover TEXT,
+  songs TEXT NOT NULL DEFAULT '[]',
+  createdAt INTEGER NOT NULL,
+  updatedAt INTEGER NOT NULL,
+  publishedAt INTEGER,
+  publishCode TEXT
+);
+CREATE INDEX IF NOT EXISTS playlists_user ON playlists(userId, updatedAt DESC);
+CREATE INDEX IF NOT EXISTS playlists_published ON playlists(publishedAt DESC);`
+
+function sqlLiteral(value) {
+  if (value === null || value === undefined) return 'NULL'
+  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : 'NULL'
+  if (typeof value === 'boolean') return value ? '1' : '0'
+  if (Buffer.isBuffer(value)) return `X'${value.toString('hex')}'`
+  // 单引号按 SQL 规则双写；NUL 没法直接写进字面量，用 char(0) 拼接保证逐字节还原
+  return sqlText(value)
+}
+
+function sqlText(value) {
+  const text = String(value)
+  if (!text.includes('\u0000')) return `'${text.replace(/'/g, "''")}'`
+  const parts = text.split('\u0000').map((piece) => `'${piece.replace(/'/g, "''")}'`)
+  return `(${parts.join(' || char(0) || ')})`
+}
+
+function dumpDatabase(now = Date.now()) {
+  const lines = []
+  const counts = {}
+  lines.push('-- SIREN RECORDS · local sqlite backup')
+  lines.push(`-- generated_at: ${new Date(now).toISOString()}`)
+  lines.push('-- schema: 0001_init')
+  lines.push('PRAGMA foreign_keys=OFF;')
+  lines.push('BEGIN TRANSACTION;')
+  lines.push(BACKUP_SCHEMA)
+  for (const table of BACKUP_TABLES) {
+    lines.push(`DELETE FROM ${table};`)
+    const rows = db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()
+    for (const row of rows) {
+      const cols = Object.keys(row)
+      lines.push(`INSERT INTO ${table} (${cols.join(', ')}) VALUES (${cols.map((c) => sqlLiteral(row[c])).join(', ')});`)
+    }
+    counts[table] = rows.length
+  }
+  lines.push('COMMIT;')
+  lines.push(`-- END OF DUMP tables=${BACKUP_TABLES.map((t) => `${t}:${counts[t]}`).join(',')}`)
+  return { sql: `${lines.join('\n')}\n`, counts }
 }
 
 function ownPlaylist(userId, id) {
@@ -492,6 +584,32 @@ async function handleApi(req, res, pathname) {
     }
 
     throw new HttpError(405, '不支持的方法')
+  }
+
+  // --- backup：运维备份用的整库导出，必须带 Bearer BACKUP_TOKEN ---
+  if (parts[1] === 'backup' && parts[2] === 'dump') {
+    if (method !== 'GET') throw new HttpError(405, '不支持的方法')
+    const configured = String(process.env.BACKUP_TOKEN || '').trim()
+    if (configured.length < BACKUP_MIN_TOKEN) throw new HttpError(404, '接口不存在')
+    const header = req.headers.authorization || ''
+    const token = header.startsWith('Bearer ') ? header.slice(7).trim() : ''
+    if (!token || !safeEqual(token, configured)) throw new HttpError(401, '未授权')
+    if (!backupAllowed(req)) throw new HttpError(429, '请求过于频繁，请稍后再试')
+    const dump = dumpDatabase()
+    const digest = createHash('sha256').update(dump.sql, 'utf8').digest('hex')
+    res.writeHead(200, {
+      'Content-Type': 'application/sql; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff',
+      'Strict-Transport-Security': 'max-age=31536000; includeSubDomains',
+      'Referrer-Policy': 'no-referrer',
+      'X-Backup-Sha256': digest,
+      'X-Backup-Bytes': String(Buffer.byteLength(dump.sql)),
+      'X-Backup-Tables': BACKUP_TABLES.map((t) => `${t}:${dump.counts[t]}`).join(','),
+      'X-Backup-At': new Date().toISOString(),
+    })
+    res.end(dump.sql)
+    return
   }
 
   // --- audio：官方音频地址带时效签名，需在播放时向官方接口换取新地址 ---
