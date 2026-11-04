@@ -11,9 +11,10 @@ import {
 import { toast } from '../lib/toast'
 import { loadCatalog } from '../lib/catalog'
 import { isInstrumental, useSettings } from '../lib/settings'
+import { advanceTrack, retreatTrack, type RepeatMode } from '../lib/player-queue'
 import type { LyricLine, Song } from '../lib/types'
 
-type RepeatMode = 'off' | 'all' | 'one'
+export type { RepeatMode }
 
 interface PlayerValue {
   queue: Song[]
@@ -21,6 +22,8 @@ interface PlayerValue {
   current: Song | null
   playing: boolean
   loading: boolean
+  /** >0 表示当前曲目正在第 n 次自动重连（网络抖动时的自愈状态） */
+  retrying: number
   currentTime: number
   duration: number
   volume: number
@@ -40,6 +43,7 @@ interface PlayerValue {
   toggleMute: () => void
   toggleShuffle: () => void
   cycleRepeat: () => void
+  retryNow: () => void
   enqueue: (songs: Song[]) => void
   removeFromQueue: (cid: string) => void
 }
@@ -48,6 +52,12 @@ const PlayerContext = createContext<PlayerValue | null>(null)
 
 /** 播放器偏好与上次播放记录保存在浏览器本地 */
 const STORE_KEY = 'siren:player'
+
+/** 自动重连：初始 800ms，之后 1.6s / 3.2s / 6.4s，共 4 次；之后交给用户手动重试 */
+const MAX_RETRY = 4
+const RETRY_BASE_MS = 800
+/** 播放中超过这个时长没有任何进度且未缓冲完成，判定为卡死并重连 */
+const STALL_MS = 15_000
 
 interface StoredPlayer {
   cids: string[]
@@ -103,7 +113,6 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const audioCtxRef = useRef<AudioContext | null>(null)
   const analyserRef = useRef<AnalyserNode | null>(null)
-  const loadedCidRef = useRef<string | null>(null)
   const [analyser, setAnalyser] = useState<AnalyserNode | null>(null)
 
   const [queue, setQueue] = useState<Song[]>([])
@@ -111,6 +120,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const [contextLabel, setContextLabel] = useState('')
   const [playing, setPlaying] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [retrying, setRetrying] = useState(0)
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
   const [volume, setVolumeState] = useState(initialPlayer?.volume ?? 0.8)
@@ -122,21 +132,54 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   const current = queue[index] ?? null
   const { hideInstrumental } = useSettings()
+
+  /**
+   * 命令式状态镜像：音频事件与重连定时器都在 React 渲染之外回调，
+   * 只能读 ref，读 state 会拿到上一帧的旧值（这正是旧版循环停在队尾的成因之一）。
+   */
+  const live = useRef<{
+    queue: Song[]
+    index: number
+    playing: boolean
+    shuffle: boolean
+    repeat: RepeatMode
+    volume: number
+    muted: boolean
+    label: string
+  }>({
+    queue: [],
+    index: 0,
+    playing: false,
+    shuffle: Boolean(initialPlayer?.shuffle),
+    repeat: (initialPlayer?.repeat ?? 'off') as RepeatMode,
+    volume: initialPlayer?.volume ?? 0.8,
+    muted: Boolean(initialPlayer?.muted),
+    label: initialPlayer?.label ?? '',
+  })
+
   const pendingSeekRef = useRef<number | null>(initialPlayer?.time ?? null)
   const restoredRef = useRef(false)
   const hadQueueRef = useRef(false)
   const lastSavedRef = useRef(0)
+  const epochRef = useRef(0)
+  const retryCountRef = useRef(0)
+  const retryTimerRef = useRef<number | null>(null)
+  const playedRef = useRef<Set<number>>(new Set())
+  const progressAtRef = useRef(0)
+  const recoveredRef = useRef(false)
+  const loadedCidRef = useRef<string | null>(null)
 
   const getAudio = useCallback(() => {
     if (!audioRef.current) {
       const audio = new Audio()
       audio.preload = 'metadata'
       audio.crossOrigin = 'anonymous'
-      audio.volume = volume
+      audio.volume = live.current.volume
+      audio.muted = live.current.muted
       audioRef.current = audio
     }
     return audioRef.current
-  }, [volume])
+  }, [])
 
   const ensureAnalyser = useCallback((audio: HTMLAudioElement) => {
     if (analyserRef.current) return
@@ -157,17 +200,168 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
+  const clearRetryTimer = useCallback(() => {
+    if (retryTimerRef.current !== null) {
+      window.clearTimeout(retryTimerRef.current)
+      retryTimerRef.current = null
+    }
+  }, [])
+
+  // tryPlay 与 scheduleRetry 互相引用：用 ref 打破初始化顺序依赖
+  const scheduleRetryRef = useRef<() => void>(() => undefined)
+
+  const setPlayingBoth = useCallback((value: boolean) => {
+    live.current.playing = value
+    setPlaying(value)
+  }, [])
+
+  /** 发起播放；失败时按退避重试，而不是直接停播 */
+  const tryPlay = useCallback(() => {
+    const audio = getAudio()
+    const epoch = epochRef.current
+    audio.play().then(
+      () => {
+        if (epochRef.current !== epoch) return
+        retryCountRef.current = 0
+        setRetrying(0)
+        if (recoveredRef.current) {
+          recoveredRef.current = false
+          toast('网络波动，已自动恢复播放', 'info')
+        }
+      },
+      (error: unknown) => {
+        if (epochRef.current !== epoch) return
+        const name = (error as { name?: string } | null)?.name
+        // 切歌或暂停打断 play() 属于正常中断，不当作故障
+        if (name === 'AbortError') return
+        // 浏览器自动播放策略拦截：交给用户手势，不重试
+        if (name === 'NotAllowedError') {
+          setPlayingBoth(false)
+          setLoading(false)
+          return
+        }
+        scheduleRetryRef.current()
+      },
+    )
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [getAudio, setPlayingBoth])
+
+  /** 网络类故障的自动重连：换一次新签名地址并从断点续播 */
+  const scheduleRetry = useCallback(() => {
+    const audio = getAudio()
+    if (!live.current.playing) return
+    if (retryCountRef.current >= MAX_RETRY) {
+      clearRetryTimer()
+      setPlayingBoth(false)
+      setLoading(false)
+      setRetrying(0)
+      toast('音频连续加载失败，已暂停。网络恢复后点击播放即可继续', 'warn')
+      return
+    }
+    retryCountRef.current += 1
+    const attempt = retryCountRef.current
+    recoveredRef.current = true
+    setRetrying(attempt)
+    setLoading(true)
+    clearRetryTimer()
+    retryTimerRef.current = window.setTimeout(() => {
+      retryTimerRef.current = null
+      if (!live.current.playing) return
+      const song = live.current.queue[live.current.index]
+      if (!song) return
+      const resume = audio.currentTime > 0 ? audio.currentTime : 0
+      pendingSeekRef.current = resume > 0 ? resume : null
+      // 旧签名可能已过期：加时间戳让 Worker 重新 302 到新地址
+      epochRef.current += 1
+      loadedCidRef.current = song.cid
+      audio.src = `/api/audio/${song.cid}?r=${Date.now()}`
+      audio.load()
+      progressAtRef.current = Date.now()
+      void tryPlay()
+    }, RETRY_BASE_MS * 2 ** (attempt - 1))
+  }, [clearRetryTimer, getAudio, setPlayingBoth, tryPlay])
+
+  scheduleRetryRef.current = scheduleRetry
+
+  /** 从队列指定位置起播（唯一入口：切歌、循环、重连都走这里） */
+  const startAt = useCallback(
+    (songs: Song[], pos: number, opts: { autoplay: boolean; seek?: number; label?: string }) => {
+      const song = songs[Math.min(Math.max(pos, 0), Math.max(songs.length - 1, 0))]
+      if (!song) return
+      const audio = getAudio()
+      clearRetryTimer()
+      retryCountRef.current = 0
+      recoveredRef.current = false
+      setRetrying(0)
+      epochRef.current += 1
+      playedRef.current.add(pos)
+
+      live.current.queue = songs
+      live.current.index = pos
+      setQueue(songs)
+      setIndex(pos)
+      if (opts.label !== undefined) {
+        live.current.label = opts.label
+        setContextLabel(opts.label)
+      }
+      setCurrentTime(opts.seek ?? 0)
+      setDuration(0)
+      setLoading(true)
+      pendingSeekRef.current = opts.seek && opts.seek > 0 ? opts.seek : null
+      loadedCidRef.current = song.cid
+      audio.src = `/api/audio/${song.cid}`
+      audio.load()
+      progressAtRef.current = Date.now()
+      ensureAnalyser(audio)
+      if (opts.autoplay) {
+        live.current.playing = true
+        setPlaying(true)
+        audioCtxRef.current?.resume().catch(() => undefined)
+        void tryPlay()
+      } else {
+        setPlayingBoth(false)
+        audio.pause()
+      }
+    },
+    [clearRetryTimer, ensureAnalyser, getAudio, setPlayingBoth, tryPlay],
+  )
+
+  /** 当前曲目结束后的推进 */
+  const handleEnded = useCallback(() => {
+    const audio = getAudio()
+    const state = live.current
+    const result = advanceTrack({
+      repeat: state.repeat,
+      shuffle: state.shuffle,
+      index: state.index,
+      length: state.queue.length,
+      played: playedRef.current,
+    })
+    if (result.kind === 'stop') {
+      setPlayingBoth(false)
+      setLoading(false)
+      return
+    }
+    if (result.restart) {
+      playedRef.current.add(state.index)
+      retryCountRef.current = 0
+      setRetrying(0)
+      epochRef.current += 1
+      audio.currentTime = 0
+      setCurrentTime(0)
+      void tryPlay()
+      return
+    }
+    startAt(state.queue, result.index, { autoplay: true })
+  }, [getAudio, setPlayingBoth, startAt, tryPlay])
+
   const playQueue = useCallback(
     (songs: Song[], startIndex = 0, label = '') => {
       if (!songs.length) return
-      pendingSeekRef.current = null
-      hadQueueRef.current = true
-      setQueue(songs)
-      setIndex(Math.min(Math.max(startIndex, 0), songs.length - 1))
-      setContextLabel(label)
-      setPlaying(true)
+      playedRef.current = new Set()
+      startAt(songs, Math.min(Math.max(startIndex, 0), songs.length - 1), { autoplay: true, label })
     },
-    [],
+    [startAt],
   )
 
   // 还原上次的播放队列与进度（保持暂停，不自动出声）
@@ -181,9 +375,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         .filter((s) => !hideInstrumental || !isInstrumental(s.name))
       if (!songs.length) return
       hadQueueRef.current = true
-      setQueue(songs)
-      setIndex(Math.min(Math.max(initialPlayer.index, 0), songs.length - 1))
-      setContextLabel(initialPlayer.label)
+      const pos = Math.min(Math.max(initialPlayer.index, 0), songs.length - 1)
+      startAt(songs, pos, { autoplay: false, seek: initialPlayer.time, label: initialPlayer.label })
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -240,48 +433,35 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     }
   }, [savePlayerState])
 
+  // 音量/静音直接同步到元素
   useEffect(() => {
     const audio = getAudio()
-    if (!current?.cid) return
-    // 官方音频地址带时效签名，改由服务端在播放时换取新地址后 302 跳转
-    if (loadedCidRef.current !== current.cid) {
-      loadedCidRef.current = current.cid
-      audio.src = `/api/audio/${current.cid}`
-      setCurrentTime(0)
-      setDuration(0)
-      setLoading(true)
-    }
-    ensureAnalyser(audio)
-    if (playing) {
-      audioCtxRef.current?.resume().catch(() => undefined)
-      audio.play().catch(() => {
-        setPlaying(false)
-        setLoading(false)
-        toast('音频加载失败，请检查网络或稍后重试', 'warn')
-      })
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [current?.cid])
-
-  useEffect(() => {
-    const audio = getAudio()
-    if (playing) {
-      audioCtxRef.current?.resume().catch(() => undefined)
-      audio.play().catch(() => setPlaying(false))
-    } else {
-      audio.pause()
-    }
-  }, [playing, getAudio])
-
-  useEffect(() => {
-    const audio = getAudio()
+    live.current.volume = volume
+    live.current.muted = muted
     audio.volume = volume
     audio.muted = muted
   }, [volume, muted, getAudio])
 
+  // 播放/暂停：从任意入口把 playing 置真时，补一次 play（幂等）
   useEffect(() => {
     const audio = getAudio()
-    const onTime = () => setCurrentTime(audio.currentTime)
+    live.current.playing = playing
+    if (!playing) {
+      audio.pause()
+      return
+    }
+    if (!audio.src || !audio.paused) return
+    audioCtxRef.current?.resume().catch(() => undefined)
+    void tryPlay()
+  }, [playing, getAudio, tryPlay])
+
+  // 音频事件统一绑定一次，全部读 ref，不随 state 变化反复重绑
+  useEffect(() => {
+    const audio = getAudio()
+    const onTime = () => {
+      progressAtRef.current = Date.now()
+      setCurrentTime(audio.currentTime)
+    }
     const onMeta = () => {
       const total = Number.isFinite(audio.duration) ? audio.duration : 0
       setDuration(total)
@@ -291,44 +471,66 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         pendingSeekRef.current = null
         // 上次听到的位置：只恢复进度，不自动播放
         if (resume < total - 2) {
-          audio.currentTime = resume
+          try {
+            audio.currentTime = resume
+          } catch {
+            // 元数据刚就绪时个别浏览器仍拒绝定位，忽略即可
+          }
           setCurrentTime(resume)
         }
       }
     }
-    const onWaiting = () => setLoading(true)
-    const onPlaying = () => setLoading(false)
-    const onEnded = () => {
-      if (repeat === 'one') {
-        audio.currentTime = 0
-        void audio.play()
+    const onWaiting = () => {
+      if (live.current.playing) setLoading(true)
+    }
+    const onPlaying = () => {
+      progressAtRef.current = Date.now()
+      setLoading(false)
+      retryCountRef.current = 0
+      setRetrying(0)
+    }
+    const onCanPlay = () => setLoading(false)
+    const onEnded = () => handleEnded()
+    const onError = () => {
+      // 只有正在播放时才自动重连；用户暂停时的错误留给手动操作
+      if (!live.current.playing) {
+        setLoading(false)
         return
       }
-      if (shuffle) {
-        setIndex((i) => (queue.length > 1 ? Math.floor(Math.random() * (queue.length - 1)) : i))
-        return
-      }
-      if (index < queue.length - 1) {
-        setIndex((i) => i + 1)
-      } else if (repeat === 'all') {
-        setIndex(0)
-      } else {
-        setPlaying(false)
-      }
+      scheduleRetry()
     }
     audio.addEventListener('timeupdate', onTime)
     audio.addEventListener('loadedmetadata', onMeta)
     audio.addEventListener('waiting', onWaiting)
+    audio.addEventListener('canplay', onCanPlay)
     audio.addEventListener('playing', onPlaying)
     audio.addEventListener('ended', onEnded)
+    audio.addEventListener('error', onError)
     return () => {
       audio.removeEventListener('timeupdate', onTime)
       audio.removeEventListener('loadedmetadata', onMeta)
       audio.removeEventListener('waiting', onWaiting)
+      audio.removeEventListener('canplay', onCanPlay)
       audio.removeEventListener('playing', onPlaying)
       audio.removeEventListener('ended', onEnded)
+      audio.removeEventListener('error', onError)
     }
-  }, [getAudio, repeat, shuffle, index, queue.length])
+  }, [getAudio, handleEnded, scheduleRetry])
+
+  // 卡死看门狗：播放中长时间无进度且未缓冲完成，主动重连
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      const audio = getAudio()
+      if (!live.current.playing || audio.paused) return
+      if (audio.readyState >= 3) return
+      if (Date.now() - progressAtRef.current < STALL_MS) return
+      scheduleRetry()
+    }, 5000)
+    return () => window.clearInterval(id)
+  }, [getAudio, scheduleRetry])
+
+  // 组件卸载时清掉重连定时器
+  useEffect(() => () => clearRetryTimer(), [clearRetryTimer])
 
   useEffect(() => {
     if (!current?.cid) {
@@ -364,34 +566,73 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   }, [current])
 
   const next = useCallback(() => {
-    if (!queue.length) return
-    if (shuffle) {
-      setIndex((i) => (queue.length > 1 ? (i + 1 + Math.floor(Math.random() * (queue.length - 1))) % queue.length : i))
-      setPlaying(true)
+    const state = live.current
+    if (!state.queue.length) return
+    const result = advanceTrack({
+      repeat: state.repeat,
+      shuffle: state.shuffle,
+      index: state.index,
+      length: state.queue.length,
+      played: playedRef.current,
+    })
+    if (result.kind === 'stop') {
+      setPlayingBoth(false)
       return
     }
-    if (index < queue.length - 1) {
-      setIndex((i) => i + 1)
-    } else if (repeat === 'all') {
-      setIndex(0)
-    } else {
-      setPlaying(false)
-    }
-  }, [queue.length, index, shuffle, repeat])
+    playedRef.current.add(state.index)
+    startAt(state.queue, result.index, { autoplay: true })
+  }, [setPlayingBoth, startAt])
 
   const prev = useCallback(() => {
     const audio = getAudio()
     if (audio.currentTime > 4) {
       audio.currentTime = 0
+      setCurrentTime(0)
       return
     }
-    setIndex((i) => Math.max(i - 1, 0))
-  }, [getAudio])
+    const state = live.current
+    if (!state.queue.length) return
+    const result = retreatTrack({ index: state.index, length: state.queue.length, repeat: state.repeat })
+    if (result.kind === 'stop') return
+    startAt(state.queue, result.index, { autoplay: state.playing })
+  }, [getAudio, startAt])
 
   const toggle = useCallback(() => {
-    if (!current) return
-    setPlaying((p) => !p)
-  }, [current])
+    if (!live.current.queue.length) return
+    const audio = getAudio()
+    if (live.current.playing) {
+      setPlayingBoth(false)
+      audio.pause()
+      return
+    }
+    live.current.playing = true
+    setPlaying(true)
+    clearRetryTimer()
+    retryCountRef.current = 0
+    setRetrying(0)
+    audioCtxRef.current?.resume().catch(() => undefined)
+    void tryPlay()
+  }, [clearRetryTimer, getAudio, setPlayingBoth, tryPlay])
+
+  /** 手动重试：用户点击「重连」时立刻换签重载，不等退避 */
+  const retryNow = useCallback(() => {
+    const song = live.current.queue[live.current.index]
+    if (!song) return
+    const audio = getAudio()
+    clearRetryTimer()
+    retryCountRef.current = 0
+    setRetrying(0)
+    pendingSeekRef.current = audio.currentTime > 0 ? audio.currentTime : null
+    epochRef.current += 1
+    loadedCidRef.current = song.cid
+    audio.src = `/api/audio/${song.cid}?r=${Date.now()}`
+    audio.load()
+    progressAtRef.current = Date.now()
+    live.current.playing = true
+    setPlaying(true)
+    setLoading(true)
+    void tryPlay()
+  }, [clearRetryTimer, getAudio, tryPlay])
 
   const seek = useCallback(
     (time: number) => {
@@ -404,29 +645,66 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   const setVolume = useCallback((v: number) => {
     setVolumeState(v)
-    if (v > 0) setMuted(false)
+    live.current.volume = v
+    if (v > 0) {
+      live.current.muted = false
+      setMuted(false)
+    }
+  }, [])
+
+  const toggleShuffle = useCallback(() => {
+    const next = !live.current.shuffle
+    live.current.shuffle = next
+    playedRef.current = new Set()
+    setShuffle(next)
+  }, [])
+
+  const cycleRepeat = useCallback(() => {
+    const next: RepeatMode = live.current.repeat === 'off' ? 'all' : live.current.repeat === 'all' ? 'one' : 'off'
+    live.current.repeat = next
+    playedRef.current = new Set()
+    setRepeat(next)
   }, [])
 
   const enqueue = useCallback((songs: Song[]) => {
-    setQueue((prev) => {
-      const existing = new Set(prev.map((s) => s.cid))
-      const additions = songs.filter((s) => !existing.has(s.cid))
-      return [...prev, ...additions]
-    })
+    const state = live.current
+    const existing = new Set(state.queue.map((s) => s.cid))
+    const additions = songs.filter((s) => !existing.has(s.cid))
+    if (!additions.length) return
+    const merged = [...state.queue, ...additions]
+    live.current.queue = merged
+    setQueue(merged)
   }, [])
 
   const removeFromQueue = useCallback(
     (cid: string) => {
-      setQueue((prev) => {
-        const at = prev.findIndex((s) => s.cid === cid)
-        if (at === -1) return prev
-        const nextQueue = prev.filter((s) => s.cid !== cid)
-        if (at < index) setIndex((i) => i - 1)
-        if (!nextQueue.length) setPlaying(false)
-        return nextQueue
-      })
+      const state = live.current
+      const at = state.queue.findIndex((s) => s.cid === cid)
+      if (at === -1) return
+      const nextQueue = state.queue.filter((s) => s.cid !== cid)
+      if (!nextQueue.length) {
+        live.current.queue = []
+        setQueue([])
+        setPlayingBoth(false)
+        const audio = getAudio()
+        audio.pause()
+        audio.removeAttribute('src')
+        loadedCidRef.current = null
+        return
+      }
+      if (at === state.index) {
+        // 删掉的正是当前曲目：接着放原位置的下一首
+        playedRef.current = new Set()
+        startAt(nextQueue, Math.min(at, nextQueue.length - 1), { autoplay: state.playing })
+        return
+      }
+      const nextIndex = at < state.index ? state.index - 1 : state.index
+      live.current.queue = nextQueue
+      live.current.index = nextIndex
+      setQueue(nextQueue)
+      setIndex(nextIndex)
     },
-    [index],
+    [getAudio, setPlayingBoth, startAt],
   )
 
   const value = useMemo<PlayerValue>(
@@ -436,6 +714,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       current,
       playing,
       loading,
+      retrying,
       currentTime,
       duration,
       volume,
@@ -452,16 +731,20 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       prev,
       seek,
       setVolume,
-      toggleMute: () => setMuted((m) => !m),
-      toggleShuffle: () => setShuffle((s) => !s),
-      cycleRepeat: () => setRepeat((r) => (r === 'off' ? 'all' : r === 'all' ? 'one' : 'off')),
+      toggleMute: () => {
+        live.current.muted = !live.current.muted
+        setMuted((m) => !m)
+      },
+      toggleShuffle,
+      cycleRepeat,
+      retryNow,
       enqueue,
       removeFromQueue,
     }),
     [
-      queue, index, current, playing, loading, currentTime, duration, volume, muted, shuffle,
-      repeat, lyrics, lyricLoading, analyser, contextLabel, playQueue, toggle, next, prev, seek,
-      setVolume, enqueue, removeFromQueue,
+      queue, index, current, playing, loading, retrying, currentTime, duration, volume, muted,
+      shuffle, repeat, lyrics, lyricLoading, analyser, contextLabel, playQueue, toggle, next, prev,
+      seek, setVolume, toggleShuffle, cycleRepeat, retryNow, enqueue, removeFromQueue,
     ],
   )
 

@@ -77,7 +77,8 @@ export function PlayerBar() {
             <button
               className={`icon-btn ${p.repeat !== 'off' ? 'is-on' : ''}`}
               onClick={p.cycleRepeat}
-              title={`循环：${p.repeat === 'off' ? '关闭' : p.repeat === 'all' ? '列表' : '单曲'}`}
+              title={`循环：${p.repeat === 'off' ? '关闭' : p.repeat === 'all' ? '列表循环' : '单曲循环'}`}
+              aria-label={`循环：${p.repeat === 'off' ? '关闭' : p.repeat === 'all' ? '列表循环' : '单曲循环'}`}
             >
               {p.repeat === 'one' ? <IconRepeatOne size={16} /> : <IconRepeat size={16} />}
             </button>
@@ -85,6 +86,11 @@ export function PlayerBar() {
 
           <div className="playerbar-extras">
             <span className="playerbar-time mono">
+              {p.retrying > 0 && (
+                <button className="playerbar-retry" onClick={p.retryNow} title="点击立即重连">
+                  重连 {p.retrying}/4
+                </button>
+              )}
               {formatDuration(p.currentTime)} / {formatDuration(p.duration)}
             </span>
             <button className="icon-btn" onClick={() => p.setVolume(p.volume > 0 ? 0 : 0.8)} title="音量">

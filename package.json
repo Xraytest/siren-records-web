@@ -8,7 +8,9 @@
     "dev:cf": "wrangler dev",
     "server": "node server/server.mjs",
     "build": "tsc -b && vite build",
+    "test": "node --test \"tests/*.test.mts\"",
     "deploy": "npm run build && wrangler deploy",
+    "deploy:safe": "node scripts/deploy-safe.mjs",
     "db:migrate": "wrangler d1 migrations apply siren-records --remote",
     "lint": "oxlint",
     "preview": "vite preview"
