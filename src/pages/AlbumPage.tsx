@@ -62,7 +62,7 @@ export function AlbumPage() {
               <IconPlay size={13} /> 全碟连播
             </button>
             <button className="btn" onClick={() => (user ? setPicking(true) : openAuth('login'))}>
-              <IconPlus size={14} /> 整碟归档至歌单
+              <IconPlus size={14} /> 整碟加入歌单
             </button>
             <a className="btn btn--ghost" href={`https://monster-siren.hypergryph.com/album/${album.cid}`} target="_blank" rel="noreferrer">
               溯源 MSR 官网 <IconArrow size={13} />

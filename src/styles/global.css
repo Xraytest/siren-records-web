@@ -851,6 +851,11 @@ select {
 
 /* ---------- 歌单卡片 ---------- */
 
+.playlist-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 24px 20px;
+}
 .playlist-strip {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -952,6 +957,87 @@ select {
 .playlist-card--new small {
   font-size: 10.5px;
   color: var(--dim);
+}
+
+/* ---------- 我的歌单 · 列表视图 ---------- */
+
+.playlist-list {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--line);
+}
+.playlist-list-row {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr) minmax(0, 220px) auto;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 8px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  transition: background 0.16s ease;
+}
+.playlist-list-row:hover {
+  background: rgba(255, 255, 255, 0.025);
+}
+.playlist-list-cover {
+  display: block;
+  width: 56px;
+  height: 56px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: #0a0c0e;
+}
+.playlist-list-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.playlist-list-cover--new {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--dim);
+}
+.playlist-list-row--new {
+  color: var(--muted);
+  cursor: pointer;
+}
+.playlist-list-row--new:hover {
+  color: var(--accent);
+  background: rgba(160, 237, 255, 0.025);
+}
+.playlist-list-name {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.playlist-list-name strong {
+  font-size: 13.5px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.playlist-list-name small {
+  font-size: 10.5px;
+  color: var(--dim);
+  font-family: var(--font-mono);
+  letter-spacing: 0.06em;
+}
+.playlist-list-tags {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.playlist-list-tags span {
+  font-size: 10px;
+  color: var(--accent-dim);
+}
+.playlist-list-actions {
+  display: flex;
+  gap: 4px;
+  justify-content: flex-end;
 }
 
 /* 拼贴 */
@@ -1097,6 +1183,10 @@ select {
   gap: 20px;
   padding: 22px 0;
   flex-wrap: wrap;
+}
+/* 紧跟页头时收窄上间距，避免双重留白 */
+.toolbar--flush {
+  padding-top: 0;
 }
 .toolbar-right {
   display: flex;
@@ -1973,6 +2063,31 @@ select {
   font-size: 9.5px;
   letter-spacing: 0.08em;
   margin-right: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.playerbar-retry {
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+  font: inherit;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  padding: 1px 6px;
+  border-radius: 999px;
+  cursor: pointer;
+  animation: playerbar-retry-pulse 1.6s ease-in-out infinite;
+}
+.playerbar-retry:hover {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+@keyframes playerbar-retry-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .playerbar-retry { animation: none; }
 }
 .volume {
   -webkit-appearance: none;
@@ -3372,6 +3487,17 @@ select {
   .playlist-strip {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+  .playlist-list-tags {
+    display: none;
+  }
+  .playlist-list-row {
+    grid-template-columns: 48px minmax(0, 1fr) auto;
+    gap: 12px;
+  }
+  .playlist-list-cover {
+    width: 48px;
+    height: 48px;
+  }
   .feed-preview,
   .feed-grid {
     grid-template-columns: 1fr;
@@ -3464,6 +3590,14 @@ select {
   .album-grid--dense {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 20px 12px;
+  }
+  .playlist-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 20px 12px;
+  }
+  .playlist-list-row {
+    gap: 10px;
+    padding: 10px 4px;
   }
   .album-tile-meta strong {
     font-size: 12px;

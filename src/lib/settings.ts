@@ -3,10 +3,14 @@ import { useSyncExternalStore } from 'react'
 export interface Settings {
   /** 隐藏被识别为伴奏的曲目 */
   hideInstrumental: boolean
+  /** 「我的歌单」页排列视图 */
+  libraryView: 'grid' | 'list'
+  /** 「我的歌单」页排序方式 */
+  librarySort: 'updated' | 'created' | 'name' | 'tracks'
 }
 
 const KEY = 'siren:settings'
-const DEFAULTS: Settings = { hideInstrumental: false }
+const DEFAULTS: Settings = { hideInstrumental: false, libraryView: 'grid', librarySort: 'updated' }
 
 function read(): Settings {
   try {

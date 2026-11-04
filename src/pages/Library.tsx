@@ -1,7 +1,7 @@
-import { useRef, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Modal } from '../components/Modal'
-import { IconCheck, IconDownload, IconPlus, IconTrash, IconUpload, IconPlay, IconGlobe } from '../components/Icons'
+import { IconCheck, IconDownload, IconGlobe, IconPlus, IconTrash, IconUpload, IconPlay } from '../components/Icons'
 import { useAuth } from '../state/AuthContext'
 import { usePlaylists } from '../state/PlaylistContext'
 import { openAuth } from '../lib/authDialog'
@@ -9,16 +9,38 @@ import { getSong } from '../lib/catalog'
 import { downloadJson, exportPlaylists, parseImport } from '../lib/share'
 import { formatRelative } from '../lib/format'
 import { toast } from '../lib/toast'
+import { updateSettings, useSettings } from '../lib/settings'
+import type { Playlist } from '../lib/types'
 
 export function Library() {
   const { user } = useAuth()
   const { playlists, create, remove, importMany } = usePlaylists()
+  const { libraryView, librarySort } = useSettings()
   const navigate = useNavigate()
   const [creating, setCreating] = useState(false)
   const [name, setName] = useState('')
   const [desc, setDesc] = useState('')
   const [tags, setTags] = useState('')
   const fileRef = useRef<HTMLInputElement | null>(null)
+
+  // 排列模式持久在 siren:settings，刷新与下次访问都保留
+  const sorted = useMemo(() => {
+    const list = [...playlists]
+    switch (librarySort) {
+      case 'created':
+        list.sort((a, b) => b.createdAt - a.createdAt)
+        break
+      case 'name':
+        list.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN'))
+        break
+      case 'tracks':
+        list.sort((a, b) => b.songs.length - a.songs.length)
+        break
+      default:
+        list.sort((a, b) => b.updatedAt - a.updatedAt)
+    }
+    return list
+  }, [playlists, librarySort])
 
   if (!user) {
     return (
@@ -72,6 +94,12 @@ export function Library() {
     toast('✓ 歌单档案已封装导出。可用于离线备份，或发送给其他博士直接导入', 'ok')
   }
 
+  const confirmRemove = async (p: Playlist) => {
+    if (confirm(`删除《${p.name}》？此操作不可撤销。`)) {
+      if (await remove(p.id)) toast('歌单已删除', 'ok')
+    }
+  }
+
   return (
     <div className="library">
       <header className="page-head">
@@ -107,62 +135,132 @@ export function Library() {
         </div>
       </header>
 
-      <div className="playlist-grid">
-        <button className="playlist-card playlist-card--new" onClick={() => setCreating(true)}>
-          <span className="playlist-new-plus">
-            <IconPlus size={22} />
-          </span>
-          <strong>新建歌单</strong>
-          <small>从空白频段开始编织</small>
-        </button>
+      <div className="toolbar toolbar--flush">
+        <span className="kicker">ARRANGEMENT / 排列模式</span>
+        <div className="toolbar-right">
+          <div className="seg seg--sm" aria-label="歌单排序方式">
+            <button
+              className={librarySort === 'updated' ? 'is-on' : ''}
+              onClick={() => updateSettings({ librarySort: 'updated' })}
+            >
+              最近更新
+            </button>
+            <button
+              className={librarySort === 'created' ? 'is-on' : ''}
+              onClick={() => updateSettings({ librarySort: 'created' })}
+            >
+              创建时间
+            </button>
+            <button
+              className={librarySort === 'name' ? 'is-on' : ''}
+              onClick={() => updateSettings({ librarySort: 'name' })}
+            >
+              名称
+            </button>
+            <button
+              className={librarySort === 'tracks' ? 'is-on' : ''}
+              onClick={() => updateSettings({ librarySort: 'tracks' })}
+            >
+              曲目数
+            </button>
+          </div>
+          <div className="seg seg--sm" aria-label="歌单视图">
+            <button
+              className={libraryView === 'grid' ? 'is-on' : ''}
+              onClick={() => updateSettings({ libraryView: 'grid' })}
+            >
+              网格
+            </button>
+            <button
+              className={libraryView === 'list' ? 'is-on' : ''}
+              onClick={() => updateSettings({ libraryView: 'list' })}
+            >
+              列表
+            </button>
+          </div>
+        </div>
+      </div>
 
-        {playlists.map((p) => (
-          <div key={p.id} className="playlist-card">
-            <Link to={`/playlist/${p.id}`} className="playlist-card-art playlist-card-art--link">
-              {p.songs.length ? (
-                <Mosaic cids={p.songs.slice(0, 4)} />
-              ) : (
-                <span className="playlist-card-blank mono">EMPTY</span>
-              )}
-            </Link>
-            <div className="playlist-card-body">
-              <Link to={`/playlist/${p.id}`} className="playlist-card-title">
-                <strong>{p.name}</strong>
+      {libraryView === 'list' ? (
+        <div className="playlist-list">
+          <button className="playlist-list-row playlist-list-row--new" onClick={() => setCreating(true)}>
+            <span className="playlist-list-cover playlist-list-cover--new">
+              <IconPlus size={18} />
+            </span>
+            <span className="playlist-list-name">
+              <strong>新建歌单</strong>
+              <small>从空白频段开始编织</small>
+            </span>
+            <span className="playlist-list-tags" />
+            <span className="playlist-list-actions" />
+          </button>
+          {sorted.map((p) => (
+            <div key={p.id} className="playlist-list-row">
+              <Link to={`/playlist/${p.id}`} className="playlist-list-cover">
+                {p.songs.length ? (
+                  <Mosaic cids={p.songs.slice(0, 4)} />
+                ) : (
+                  <span className="playlist-card-blank mono">EMPTY</span>
+                )}
               </Link>
-              <small>
-                {p.songs.length} 首 · {formatRelative(p.updatedAt)}
-                {p.publishedAt ? ' · 已发布' : ''}
-              </small>
-              <div className="playlist-card-tags">
+              <Link to={`/playlist/${p.id}`} className="playlist-list-name">
+                <strong>{p.name}</strong>
+                <small>
+                  {p.songs.length} 首 · {formatRelative(p.updatedAt)}
+                  {p.publishedAt ? ' · 公开' : ''}
+                </small>
+              </Link>
+              <span className="playlist-list-tags">
                 {p.tags.slice(0, 3).map((t) => (
                   <span key={t}>#{t}</span>
                 ))}
-              </div>
-              <div className="playlist-card-actions">
-                <Link to={`/playlist/${p.id}`} className="icon-btn icon-btn--sm" title="打开">
-                  <IconPlay size={13} />
-                </Link>
-                {p.publishedAt && (
-                  <Link to="/explore" className="icon-btn icon-btn--sm" title="已发布">
-                    <IconGlobe size={13} />
-                  </Link>
+              </span>
+              <span className="playlist-list-actions">
+                <PlaylistActions p={p} onRemove={() => void confirmRemove(p)} />
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="playlist-grid">
+          <button className="playlist-card playlist-card--new" onClick={() => setCreating(true)}>
+            <span className="playlist-new-plus">
+              <IconPlus size={22} />
+            </span>
+            <strong>新建歌单</strong>
+            <small>从空白频段开始编织</small>
+          </button>
+
+          {sorted.map((p) => (
+            <div key={p.id} className="playlist-card">
+              <Link to={`/playlist/${p.id}`} className="playlist-card-art playlist-card-art--link">
+                {p.songs.length ? (
+                  <Mosaic cids={p.songs.slice(0, 4)} />
+                ) : (
+                  <span className="playlist-card-blank mono">EMPTY</span>
                 )}
-                <button
-                  className="icon-btn icon-btn--sm"
-                  title="删除"
-                  onClick={async () => {
-                    if (confirm(`删除《${p.name}》？此操作不可撤销。`)) {
-                      if (await remove(p.id)) toast('歌单已删除', 'ok')
-                    }
-                  }}
-                >
-                  <IconTrash size={13} />
-                </button>
+              </Link>
+              <div className="playlist-card-body">
+                <Link to={`/playlist/${p.id}`} className="playlist-card-title">
+                  <strong>{p.name}</strong>
+                </Link>
+                <small>
+                  {p.songs.length} 首 · {formatRelative(p.updatedAt)}
+                  {p.publishedAt ? ' · 公开' : ''}
+                </small>
+                <div className="playlist-card-tags">
+                  {p.tags.slice(0, 3).map((t) => (
+                    <span key={t}>#{t}</span>
+                  ))}
+                </div>
+                <div className="playlist-card-actions">
+                  <PlaylistActions p={p} onRemove={() => void confirmRemove(p)} />
+                </div>
               </div>
             </div>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
 
       {!playlists.length && (
         <div className="empty-block">
@@ -227,6 +325,24 @@ export function Library() {
         </div>
       </Modal>
     </div>
+  )
+}
+
+function PlaylistActions({ p, onRemove }: { p: Playlist; onRemove: () => void }) {
+  return (
+    <>
+      <Link to={`/playlist/${p.id}`} className="icon-btn icon-btn--sm" title="打开">
+        <IconPlay size={13} />
+      </Link>
+      {p.publishedAt && (
+        <Link to="/explore" className="icon-btn icon-btn--sm" title="公开 · 前往广场">
+          <IconGlobe size={13} />
+        </Link>
+      )}
+      <button className="icon-btn icon-btn--sm" title="删除" onClick={onRemove}>
+        <IconTrash size={13} />
+      </button>
+    </>
   )
 }
 

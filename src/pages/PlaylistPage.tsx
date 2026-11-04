@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { Modal } from '../components/Modal'
 import { SongTable } from '../components/SongTable'
 import {
-  IconCheck, IconDownload, IconEdit, IconGlobe, IconPlay, IconPlus, IconSearch, IconShare, IconTrash,
+  IconCheck, IconDownload, IconEdit, IconPlay, IconPlus, IconSearch, IconShare, IconTrash,
 } from '../components/Icons'
 import { useAuth } from '../state/AuthContext'
 import { usePlaylists } from '../state/PlaylistContext'
@@ -34,7 +34,6 @@ export function PlaylistPage() {
 
   const [editing, setEditing] = useState(false)
   const [shareOpen, setShareOpen] = useState(false)
-  const [publishOpen, setPublishOpen] = useState(false)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [form, setForm] = useState({ name: '', description: '', tags: '' })
 
@@ -64,12 +63,19 @@ export function PlaylistPage() {
     toast('歌单信息已更新', 'ok')
   }
 
+  // 私人 ⇄ 公开：公开即发布到广场（含分享码），私人即撤下
   const doPublish = async () => {
     const entry = await publish(playlist.id)
     if (entry) {
-      toast('已发布到公开广场', 'ok')
-      setPublishOpen(false)
+      toast(playlist.publishedAt ? '广场内容已更新' : '已设为公开 · 已发布到公开广场', 'ok')
     }
+  }
+
+  const doUnpublish = async () => {
+    if (!playlist.publishedAt) return
+    if (!confirm(`将《${playlist.name}》设为私人？公开广场上的这张歌单与它的分享入口会一并撤下。`)) return
+    await unpublish(playlist.id)
+    toast('已设为私人 · 已从广场撤下', 'info')
   }
 
   const doExport = () => {
@@ -101,10 +107,10 @@ export function PlaylistPage() {
           ) : (
             <span className="playlist-hero-blank mono">EMPTY PLAYLIST</span>
           )}
-          {playlist.publishedAt && <span className="badge badge--accent">已发布</span>}
+          {playlist.publishedAt && <span className="badge badge--accent">公开</span>}
         </div>
         <div className="playlist-hero-copy">
-          <span className="kicker">PLAYLIST / {playlist.tags[0]?.toUpperCase() || 'PRIVATE'}</span>
+          <span className="kicker">PLAYLIST / {playlist.publishedAt ? 'PUBLIC' : playlist.tags[0]?.toUpperCase() || 'PRIVATE'}</span>
           <h1>{playlist.name}</h1>
           <p className="album-intro">{playlist.description || '这张歌单还没有描述。'}</p>
           <div className="album-meta">
@@ -126,14 +132,20 @@ export function PlaylistPage() {
               <IconPlay size={13} /> 播放
             </button>
             <button className="btn" onClick={() => setPickerOpen(true)}>
-              <IconPlus size={14} /> 添加曲目
+              <IconPlus size={14} /> 加入歌单
             </button>
             <button className="btn" onClick={() => setShareOpen(true)}>
               <IconShare size={14} /> 分享
             </button>
-            <button className="btn" onClick={() => setPublishOpen(true)}>
-              <IconGlobe size={14} /> {playlist.publishedAt ? '发布管理' : '发布'}
-            </button>
+            <div className="seg seg--sm" title="歌单可见性：私人仅自己可见，公开进入公开广场">
+              <button className={playlist.publishedAt ? '' : 'is-on'} onClick={doUnpublish}>私人</button>
+              <button className={playlist.publishedAt ? 'is-on' : ''} onClick={doPublish}>公开</button>
+            </div>
+            {playlist.publishedAt && (
+              <button className="btn" onClick={doPublish} title="把当前曲目与信息重新推送至公开广场">
+                更新广场内容
+              </button>
+            )}
             <button className="btn btn--ghost" onClick={doExport}>
               <IconDownload size={14} /> 导出
             </button>
@@ -171,7 +183,7 @@ export function PlaylistPage() {
           onMove={(i, dir) => void moveSong(playlist.id, i, i + dir)}
           empty={
             <span>
-              歌单还是空的。<button className="text-link" onClick={() => setPickerOpen(true)}>添加曲目</button>
+              歌单还是空的。<button className="text-link" onClick={() => setPickerOpen(true)}>加入歌单</button>
             </span>
           }
         />
@@ -244,54 +256,6 @@ export function PlaylistPage() {
         </div>
       </Modal>
 
-      <Modal
-        open={publishOpen}
-        onClose={() => setPublishOpen(false)}
-        kicker="PUBLISH / 发布"
-        title={playlist.publishedAt ? '已发布到广场' : '发布到公开广场'}
-        footer={
-          playlist.publishedAt ? (
-            <>
-              <button
-                className="btn"
-                onClick={() => {
-                  void unpublish(playlist.id)
-                  toast('已从广场撤下', 'info')
-                  setPublishOpen(false)
-                }}
-              >
-                撤下
-              </button>
-              <button className="btn btn--primary" onClick={doPublish}>
-                更新发布内容
-              </button>
-            </>
-          ) : (
-            <>
-              <button className="btn" onClick={() => setPublishOpen(false)}>取消</button>
-              <button className="btn btn--primary" onClick={doPublish}>
-                确认发布
-              </button>
-            </>
-          )
-        }
-      >
-        <p className="hint">
-          发布后，歌单会以只读形式出现在公开广场，并生成分享码。广场索引保存在本机浏览器中——这是无后端版本的取舍，导入分享码仍然可以跨设备传播歌单。
-        </p>
-        {playlist.publishedAt && (
-          <div className="publish-status">
-            <IconCheck size={16} />
-            <span>发布于 {formatDate(playlist.publishedAt)} · 分享码已生成</span>
-          </div>
-        )}
-        <div className="publish-facts">
-          <span>曲目 <em className="mono">{playlist.songs.length}</em></span>
-          <span>标签 <em className="mono">{playlist.tags.length}</em></span>
-          <span>作者 <em>{user?.name}</em></span>
-        </div>
-      </Modal>
-
       <SongPicker
         open={pickerOpen}
         onClose={() => setPickerOpen(false)}
@@ -299,7 +263,7 @@ export function PlaylistPage() {
         onAdd={async (cids) => {
           const added = await addSongs(playlist.id, cids)
           if (added === null) return
-          toast(added ? `已添加 ${added} 首曲目` : '这些曲目已在歌单中', added ? 'ok' : 'info')
+          toast(added ? `已加入 ${added} 首曲目` : '这些曲目已在歌单中', added ? 'ok' : 'info')
           setPickerOpen(false)
         }}
       />
@@ -349,8 +313,8 @@ function SongPicker({
     <Modal
       open={open}
       onClose={onClose}
-      kicker="ADD TRACKS"
-      title="添加曲目"
+      kicker="ADD TO PLAYLIST"
+      title="加入歌单"
       wide
       footer={
         <>
