@@ -341,6 +341,18 @@ SIREN_BACKUP_KEEP_DAILY=0 ~/siren-backup/backup-d1.sh   # 必须启动前就拒�
     **实测**：默认顺序、四种模式、移动按钮显隐、公开/私人徽标与 toast 全部符合预期；
     旧文案「将音乐放入歌单」不再出现，「加入歌单」出现。
 
+16. **部署链的两个自否决/假校验缺陷（执行迁移时才暴露）**：
+    (a) `db:migrate` 的预备份调用 `deploy-safe --backup-only`，而后者仍跑迁移闸门——
+    带 `DELETE FROM` 的迁移会让"先备份再 apply"永远无法开始。
+    → `--backup-only` 不再跑闸门（`migrate.mjs` 已先跑过同一检查）。
+    (b) `deploy-safe` 的线上行数校验把 SQL 塞进 `--command`，被参数空白保护拒绝；
+    改用 `--file` 后又因 wrangler 批量执行**不返回 SELECT 结果**（只返回
+    "Total queries executed"）而把每张表都算成 0，导致任何真实备份都被判"不完整"。
+    → 改为自行拼一条带引号的命令行（SQL 只由常量表名构成），实测线上 `2/15/4`
+    与导出逐表一致；缺失时仍降级为 null 而不是 0。
+    **实测**：`node scripts/deploy-safe.mjs --backup-only` → `users:2,sessions:15,playlists:4`；
+    `npm run db:migrate -- --allow-destructive` 应用 `0002` 成功。
+
 ### 5.3 运行时证据汇总
 
 | 套件 | 条数 | 结果 | 说明 |
@@ -356,6 +368,11 @@ SIREN_BACKUP_KEEP_DAILY=0 ~/siren-backup/backup-d1.sh   # 必须启动前就拒�
 
 线上只读探测：首页 200 且带 CSP `frame-ancestors 'none'`；`/api/feed` 200；
 匿名 `/api/backup/dump` 401；音频 302 到 `res01.hycdn.cn`；歌词同源 200。
+
+迁移 `0002` 应用后的线上状态（`wrangler d1 execute` 实测）：`users=2, sessions=0, playlists=4,
+published=0`，三个索引（`sessions_expires` / `sessions_user` / `playlists_publish_code`）齐备；
+`feed` 为空是因为没有公开歌单（不是故障）。会话表清空是本次迁移的预期代价，所有旧登录需重新登录一次。
+NetCenter 随后一次真实备份记录 `users:2,sessions:0,playlists:4`、`restore.ok=true`。
 
 ### 5.4 仍然存在 / 明确接受的风险
 
@@ -383,8 +400,8 @@ SIREN_BACKUP_KEEP_DAILY=0 ~/siren-backup/backup-d1.sh   # 必须启动前就拒�
 ```bash
 # 本地镜像 + 对抗套件（19 条；需要 BACKUP_TOKEN 为非 hex 串以覆盖历史绕过）
 cd siren-records-web
-BACKUP_TOKEN='rt9999…' PORT=8127 node server/server.mjs &
-BASE=http://127.0.0.1:8127 BACKUP_TOKEN='rt9999…' node redteam2.tmp.mjs
+BACKUP_TOKEN='rt9999…' PORT=8137 node server/server.mjs &
+BASE=http://127.0.0.1:8137 BACKUP_TOKEN='rt9999…' node redteam2.tmp.mjs
 
 # 迁移闸门：必须正确识别 pending 并在破坏性语句上中止
 npm run db:migrate:check
@@ -399,4 +416,8 @@ node bomb-test.tmp.mjs
 scp ops/netcenter-backup/{backup-d1.sh,restore-check.py} pi:/tmp/…
 # 见 _tmp/pi-backup-verify.sh：配置生效 41/41、08/030 拒绝、.part 不转正
 ```
+
+> 上述 5 个临时脚本（`redteam2.tmp.mjs`、`bomb-test.tmp.mjs`、`e2e-{ui,retry,repeat}.tmp.mjs`）
+> 在交付时已归档到仓库外的 `D:\WorkSpace\_tmp\siren-round2-suites\`，不随仓库分发；
+> 需要复跑时把工作目录切到该目录并设 `BASE` 指向本地镜像即可。
 
