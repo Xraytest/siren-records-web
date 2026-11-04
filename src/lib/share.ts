@@ -5,20 +5,27 @@ export function encodeShare(payload: SharePayload): string {
   return LZString.compressToEncodedURIComponent(JSON.stringify(payload))
 }
 
+// 分享码是外部输入：LZString 的展开比很高，几 KB 的码可以解出上百 MB，
+// 因此解码前先按码长与解压后长度双重限流，避免一个链接就把标签页撑爆。
+const CODE_MAX = 20_000
+const SHARE_JSON_MAX = 4_000_000
+const SHARE_SONGS_MAX = 2_000
+
 export function decodeShare(code: string): SharePayload | null {
   try {
+    if (typeof code !== 'string' || code.length > CODE_MAX) return null
     const json = LZString.decompressFromEncodedURIComponent(code)
-    if (!json) return null
+    if (!json || json.length > SHARE_JSON_MAX) return null
     const data = JSON.parse(json) as SharePayload
     if (data?.t !== 'siren-playlist' || !Array.isArray(data.songs)) return null
     return {
       ...data,
-      name: typeof data.name === 'string' ? data.name : '未命名歌单',
-      desc: typeof data.desc === 'string' ? data.desc : '',
-      author: typeof data.author === 'string' ? data.author : '匿名',
-      tags: Array.isArray(data.tags) ? data.tags.filter((t) => typeof t === 'string') : [],
+      name: typeof data.name === 'string' ? data.name.slice(0, 80) : '未命名歌单',
+      desc: typeof data.desc === 'string' ? data.desc.slice(0, 400) : '',
+      author: typeof data.author === 'string' ? data.author.slice(0, 40) : '匿名',
+      tags: Array.isArray(data.tags) ? data.tags.filter((t) => typeof t === 'string').slice(0, 6) : [],
       cover: typeof data.cover === 'string' ? data.cover : null,
-      songs: data.songs.filter((c): c is string => typeof c === 'string'),
+      songs: data.songs.filter((c): c is string => typeof c === 'string').slice(0, SHARE_SONGS_MAX),
     }
   } catch {
     return null
@@ -97,6 +104,10 @@ export function downloadJson(filename: string, data: unknown) {
   setTimeout(() => URL.revokeObjectURL(url), 2000)
 }
 
+const IMPORT_MAX = 8_000_000
+const IMPORT_MAX_PLAYLISTS = 50
+const IMPORT_MAX_SONGS = 2_000
+
 export interface ImportedPlaylist {
   name: string
   description: string
@@ -107,6 +118,8 @@ export interface ImportedPlaylist {
 
 /** 解析导入文件：兼容本应用导出的曲库包（{playlists:[...]}）与外部 {name, songs:[cid]} 结构 */
 export function parseImport(raw: string): ImportedPlaylist[] {
+  // 导入文件同样是外部输入：限制原文长度、歌单数与单张曲目数
+  if (typeof raw !== 'string' || raw.length > IMPORT_MAX) throw new Error('文件过大')
   const data = JSON.parse(raw) as unknown
   const unpack = (value: unknown): unknown[] => {
     if (Array.isArray(value)) return value
@@ -118,13 +131,14 @@ export function parseImport(raw: string): ImportedPlaylist[] {
     }
     return []
   }
-  const list = unpack(data)
+  const list = unpack(data).slice(0, IMPORT_MAX_PLAYLISTS)
   const out: ImportedPlaylist[] = []
   for (const item of list as Record<string, unknown>[]) {
     if (!item || typeof item !== 'object') continue
     const songs = item.songs
     if (!Array.isArray(songs)) continue
     const cids = songs
+      .slice(0, IMPORT_MAX_SONGS)
       .map((s) => {
         if (typeof s === 'string') return s
         if (s && typeof s === 'object' && 'cid' in s) return String((s as { cid: unknown }).cid)
@@ -133,9 +147,9 @@ export function parseImport(raw: string): ImportedPlaylist[] {
       .filter((c): c is string => Boolean(c))
     if (!cids.length) continue
     out.push({
-      name: typeof item.name === 'string' && item.name.trim() ? item.name : '导入的歌单',
-      description: typeof item.description === 'string' ? item.description : '',
-      tags: Array.isArray(item.tags) ? item.tags.filter((t): t is string => typeof t === 'string') : [],
+      name: typeof item.name === 'string' && item.name.trim() ? item.name.slice(0, 80) : '导入的歌单',
+      description: typeof item.description === 'string' ? item.description.slice(0, 400) : '',
+      tags: Array.isArray(item.tags) ? item.tags.filter((t): t is string => typeof t === 'string').slice(0, 6) : [],
       cover: typeof item.cover === 'string' ? item.cover : null,
       songs: cids,
     })

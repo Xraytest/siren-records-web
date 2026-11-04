@@ -338,6 +338,16 @@ function persist(row, patch) {
   return toPlaylist(db.prepare('SELECT * FROM playlists WHERE id = ?').get(row.id))
 }
 
+// 与 Worker 一致：每账号歌单上限，避免单账号打光写入配额
+const MAX_PLAYLISTS_PER_USER = 200
+function assertPlaylistQuota(userId, adding) {
+  const row = db.prepare('SELECT COUNT(*) AS n FROM playlists WHERE userId = ?').get(userId)
+  const n = row ? Number(row.n) : 0
+  if (n + adding > MAX_PLAYLISTS_PER_USER) {
+    throw new HttpError(409, `每个账号最多 ${MAX_PLAYLISTS_PER_USER} 张歌单，请先删除不用的`)
+  }
+}
+
 function insertPlaylist(userId, input, now = Date.now()) {
   const id = `pl_${randomBytes(8).toString('hex')}`
   db.prepare(
@@ -350,7 +360,8 @@ function insertPlaylist(userId, input, now = Date.now()) {
     clipText(input.description),
     JSON.stringify(tagList(input.tags)),
     typeof input.coverSongCid === 'string' ? input.coverSongCid : null,
-    typeof input.cover === 'string' ? input.cover : null,
+    // 创建时也走白名单：否则可以把任意字符串（最长到 body 上限）塞进 cover 白占存储
+    typeof input.cover === 'string' ? normalizeCover(input.cover) : null,
     JSON.stringify(cidList(input.songs)),
     now,
     now,
@@ -478,6 +489,7 @@ async function handleApi(req, res, pathname) {
       if (method === 'POST') {
         const user = requireUser(req)
         const body = await readJson(req)
+        assertPlaylistQuota(user.id, 1)
         return json(res, 200, { playlist: insertPlaylist(user.id, body) })
       }
       throw new HttpError(405, '不支持的方法')
@@ -488,6 +500,7 @@ async function handleApi(req, res, pathname) {
       const body = await readJson(req)
       const list = Array.isArray(body.items) ? body.items.slice(0, 50) : []
       if (!list.length) throw new HttpError(400, '没有可导入的歌单')
+      assertPlaylistQuota(user.id, list.length)
       const created = list.map((item, i) => insertPlaylist(user.id, item, Date.now() + i))
       return json(res, 200, { created, count: created.length })
     }

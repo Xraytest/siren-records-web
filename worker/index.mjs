@@ -378,6 +378,16 @@ async function persist(env, row, patch) {
   return toPlaylist(fresh)
 }
 
+// 每账号歌单上限：没有上限时一个账号就能把 D1 写入配额（100k 行/天）打光，
+// 连带认证与登录一起写失败，属于低成本的全站可用性打击。
+const MAX_PLAYLISTS_PER_USER = 200
+async function assertPlaylistQuota(env, userId, adding) {
+  const row = await env.DB.prepare('SELECT COUNT(*) AS n FROM playlists WHERE userId = ?').bind(userId).first()
+  if ((row?.n || 0) + adding > MAX_PLAYLISTS_PER_USER) {
+    throw new HttpError(409, `每个账号最多 ${MAX_PLAYLISTS_PER_USER} 张歌单，请先删除不用的`)
+  }
+}
+
 async function insertPlaylist(env, userId, input, now = Date.now()) {
   const id = `pl_${randomHex(8)}`
   await env.DB.prepare(
@@ -391,7 +401,8 @@ async function insertPlaylist(env, userId, input, now = Date.now()) {
       clipText(input.description),
       JSON.stringify(tagList(input.tags)),
       typeof input.coverSongCid === 'string' ? input.coverSongCid : null,
-      typeof input.cover === 'string' ? input.cover : null,
+      // 创建时也走白名单：否则可以把任意字符串（最长到 body 上限）塞进 cover 白占存储
+      typeof input.cover === 'string' ? normalizeCover(input.cover) : null,
       JSON.stringify(cidList(input.songs)),
       now,
       now,
@@ -551,6 +562,7 @@ async function handleApi(request, env, url) {
       if (method === 'POST') {
         const user = await requireUser(request, env)
         const body = await readJson(request)
+        await assertPlaylistQuota(env, user.id, 1)
         return json(200, { playlist: await insertPlaylist(env, user.id, body) })
       }
       throw new HttpError(405, '不支持的方法')
@@ -561,6 +573,7 @@ async function handleApi(request, env, url) {
       const body = await readJson(request)
       const list = Array.isArray(body.items) ? body.items.slice(0, 50) : []
       if (!list.length) throw new HttpError(400, '没有可导入的歌单')
+      await assertPlaylistQuota(env, user.id, list.length)
       const created = []
       for (let i = 0; i < list.length; i++) {
         created.push(await insertPlaylist(env, user.id, list[i], Date.now() + i))

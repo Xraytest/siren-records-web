@@ -42,3 +42,7 @@ promo/.demo-token
 
 # D1 remote backups (user data, never commit)
 backups/
+
+# Python »º´æ
+__pycache__/
+*.pyc
