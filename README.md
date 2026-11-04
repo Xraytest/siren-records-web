@@ -28,6 +28,9 @@
 - 前端无 `innerHTML`/`eval` 等危险 sink，歌单名/描述/封面按纯文本渲染。
 - 备份接口 `GET /api/backup/dump` 需 `Bearer BACKUP_TOKEN`（≥32 字符，常量时间比较），未配置密钥时直接 404；只读、仅 GET、每 IP 每小时 10 次，响应含 SHA-256 与行数供对端校验。`BACKUP_TOKEN` 用 `wrangler secret put` 注入，不入库不入代码。
 - 导出按 `rowid` keyset 分页（非 `OFFSET`），备份过程中的插入不会造成跳行/重复；文本转义含单引号双写与 `char(0)` 拼接（含 NUL 的字段可逐字节还原）。D1 无跨语句快照隔离，一次导出不保证是严格时间点。
+- 每账号最多 200 张歌单（创建与导入都校验），防止单账号打光 D1 写入配额。
+
+完整威胁模型、红队压测记录与**仍然存在的风险**见 [SECURITY.md](SECURITY.md)。
 
 ## 技术栈
 
