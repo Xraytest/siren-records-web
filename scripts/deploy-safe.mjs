@@ -6,27 +6,46 @@
  * 所以部署顺序固定为 —— 迁移审查 → 导出线上库 → 校验导出 → 构建 → 发布 → 自检。
  *
  * 用法：
- *   npm run deploy:safe                  # 正常发布
+ *   npm run deploy:safe                          # 正常发布
  *   npm run deploy:safe -- --allow-destructive   # 迁移里确实需要 DROP/DELETE 时显式放开
  *   npm run deploy:safe -- --skip-live-check     # 不访问线上（离线环境）
+ *   npm run deploy:safe -- --backup-only         # 只做备份（db:migrate 会用它做预备份）
+ *   npm run deploy:safe -- --all-migrations      # 扫描全部迁移（默认只看 pending）
  */
 
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import {
+  chmodSync,
+  createReadStream,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
+import { findDestructive } from './lib/sql-scan.mjs'
+import { parsePendingMigrations } from './lib/wrangler-migrations.mjs'
 
 const ROOT = path.resolve(import.meta.dirname, '..')
 const DB_NAME = 'siren-records'
 const SITE = 'https://siren.neolx.ltd'
 const MIGRATIONS_DIR = path.join(ROOT, 'migrations')
 const BACKUP_DIR = path.join(ROOT, 'backups', 'd1')
+const KEEP_BACKUPS = 10
+const TABLES = ['users', 'sessions', 'playlists']
 
 const args = new Set(process.argv.slice(2))
 const allowDestructive = args.has('--allow-destructive')
 const skipLiveCheck = args.has('--skip-live-check')
 const checkOnly = args.has('--check')
 const dryRun = args.has('--dry-run')
+const backupOnly = args.has('--backup-only')
+const allMigrations = args.has('--all-migrations')
 const npx = 'npx'
 
 function log(message) {
@@ -53,34 +72,50 @@ function run(command, commandArgs, options = {}) {
   if (result.error) fail(`${command} 无法执行：${result.error.message}`)
   if (result.status !== 0) {
     if (options.capture) console.error(result.stdout || '', result.stderr || '')
+    if (options.allowFailure) return { ok: false, stdout: result.stdout || '', stderr: result.stderr || '' }
     fail(`${command} ${commandArgs.join(' ')} 退出码 ${result.status}`)
   }
-  return result
+  return { ok: true, stdout: result.stdout || '', stderr: result.stderr || '' }
 }
 
-/* ---------- 1. 迁移审查 ---------- */
+/* ---------- 1. 迁移审查（词法级，只看 pending） ---------- */
 
-const DESTRUCTIVE = [
-  [/\bdrop\s+(table|column|index|view|trigger)\b/i, 'DROP TABLE/COLUMN/INDEX'],
-  [/\bdelete\s+from\b/i, 'DELETE FROM'],
-  [/\btruncate\b/i, 'TRUNCATE'],
-  [/\balter\s+table\b/i, 'ALTER TABLE（改写既有结构）'],
-]
+function pendingMigrations() {
+  const result = run(npx, ['wrangler', 'd1', 'migrations', 'list', DB_NAME, '--remote'], {
+    capture: true,
+    allowFailure: true,
+  })
+  if (!result.ok) return null
+  return parsePendingMigrations(result.stdout)
+}
 
 function inspectMigrations() {
   if (!existsSync(MIGRATIONS_DIR)) return
-  const files = readdirSync(MIGRATIONS_DIR).filter((file) => file.endsWith('.sql')).sort()
+  const all = readdirSync(MIGRATIONS_DIR).filter((file) => file.endsWith('.sql')).sort()
+  if (!all.length) return
+
+  let files = all
+  if (!allMigrations) {
+    const pending = pendingMigrations()
+    if (pending === null) {
+      console.warn('  ⚠ 无法读取 pending 列表，退回扫描全部迁移')
+    } else if (!pending.length) {
+      log('迁移审查：线上已是最新，无待应用迁移')
+      return
+    } else {
+      files = pending.filter((file) => all.includes(file))
+      const missing = pending.filter((file) => !all.includes(file))
+      if (missing.length) fail(`wrangler 报告存在本地缺失的迁移：${missing.join('、')}`)
+    }
+  }
+
   const findings = []
   for (const file of files) {
     const sql = readFileSync(path.join(MIGRATIONS_DIR, file), 'utf8')
-    // 去掉 -- 行注释再匹配，避免注释里提到 DROP 造成误报
-    const body = sql.replace(/--[^\n]*/g, '')
-    for (const [pattern, label] of DESTRUCTIVE) {
-      if (pattern.test(body)) findings.push(`${file} 含 ${label}`)
-    }
+    for (const finding of findDestructive(sql)) findings.push(`${file} 含 ${finding.label}：${finding.statement}`)
   }
   if (!findings.length) {
-    log(`迁移审查通过（${files.length} 个迁移文件，无破坏性语句）`)
+    log(`迁移审查通过（检查 ${files.length} 个待应用迁移，无破坏性语句）`)
     return
   }
   for (const finding of findings) console.warn(`  ⚠ ${finding}`)
@@ -101,22 +136,122 @@ function timestamp() {
   )
 }
 
-function backupDatabase() {
-  mkdirSync(BACKUP_DIR, { recursive: true })
+/** 线上真实行数（拿不到就返回 null，调用方降级） */
+function liveCounts() {
+  const sql = `SELECT ${TABLES.map((t) => `(SELECT COUNT(*) FROM ${t}) AS ${t}`).join(', ')}`
+  const result = run(
+    npx,
+    ['wrangler', 'd1', 'execute', DB_NAME, '--remote', '--json', `--command=${sql}`],
+    { capture: true, allowFailure: true },
+  )
+  if (!result.ok) return null
+  try {
+    const start = result.stdout.indexOf('[')
+    const end = result.stdout.lastIndexOf(']')
+    if (start < 0 || end < 0) return null
+    const rows = JSON.parse(result.stdout.slice(start, end + 1))
+    const row = rows?.[0]?.results?.[0]
+    if (!row) return null
+    return Object.fromEntries(TABLES.map((table) => [table, Number(row[table] ?? row[table.toUpperCase()] ?? 0)]))
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 把导出文件真正加载进内存 SQLite 校验：integrity_check + 每表行数。
+ * 早期只查 4 个子串（`CREATE TABLE users` 等），空库/另一份库/干净截断的下载都能通过。
+ */
+async function verifyDump(target, expected) {
+  let DatabaseSync
+  try {
+    ;({ DatabaseSync } = await import('node:sqlite'))
+  } catch {
+    console.warn('  ⚠ 当前 Node 没有 node:sqlite，退化为标记检查（无法做完整性校验）')
+    return null
+  }
+  const sql = readFileSync(target, 'utf8')
+  const db = new DatabaseSync(':memory:')
+  try {
+    db.exec(sql)
+    const integrity = db.prepare('PRAGMA integrity_check').get()
+    const integrityValue = integrity ? Object.values(integrity)[0] : 'unknown'
+    if (integrityValue !== 'ok') fail(`导出库 integrity_check=${integrityValue}`)
+    const counts = {}
+    for (const table of TABLES) {
+      counts[table] = Number(db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n)
+    }
+    if (counts.users < 1) fail('导出库 users 为 0（可能是空库/错库），不继续')
+    if (expected) {
+      for (const table of TABLES) {
+        if (expected[table] !== counts[table]) {
+          fail(`导出库 ${table} 行数 ${counts[table]} 与线上 ${expected[table]} 不一致（导出不完整）`)
+        }
+      }
+    }
+    return counts
+  } catch (error) {
+    fail(`导出库无法加载：${error.message}`)
+  } finally {
+    db.close()
+  }
+}
+
+function sha256File(file) {
+  return createHash('sha256').update(readFileSync(file)).digest('hex')
+}
+
+function pruneBackups() {
+  const files = readdirSync(BACKUP_DIR)
+    .filter((name) => name.endsWith('.sql'))
+    .sort()
+    .reverse()
+  for (const name of files.slice(KEEP_BACKUPS)) {
+    for (const suffix of ['', '.sha256']) {
+      const target = path.join(BACKUP_DIR, name + suffix)
+      if (existsSync(target)) unlinkSync(target)
+    }
+  }
+}
+
+async function backupDatabase() {
+  // 明文 dump 含用户凭据哈希与（已哈希的）会话键：目录 700、文件 600，别让同机其他用户读到
+  mkdirSync(BACKUP_DIR, { recursive: true, mode: 0o700 })
+  try {
+    chmodSync(BACKUP_DIR, 0o700)
+  } catch {
+    // Windows 上没有 POSIX 权限位，忽略
+  }
   const target = path.join(BACKUP_DIR, `siren-d1-${timestamp()}.sql`)
-  log(`导出线上 D1 → ${path.relative(ROOT, target)}`)
-  run(npx, ['wrangler', 'd1', 'export', DB_NAME, '--remote', '--skip-confirmation', `--output=${target}`])
+  const expected = liveCounts()
+  log(`导出线上 D1 → ${path.relative(ROOT, target)}${expected ? `（线上 ${JSON.stringify(expected)}）` : ''}`)
+  run(npx, ['wrangler', 'd1', 'export', DB_NAME, '--remote', '--skip-confirmation', `--output=${target}`], {
+    env: { WRANGLER_SEND_METRICS: 'false' },
+  })
 
   if (!existsSync(target)) fail('导出文件不存在')
   const size = statSync(target).size
   if (size < 512) fail(`导出文件过小（${size} 字节），不继续部署`)
+  try {
+    chmodSync(target, 0o600)
+  } catch {
+    // 同上
+  }
 
-  const sql = readFileSync(target, 'utf8')
-  const required = ['CREATE TABLE users', 'CREATE TABLE playlists', 'INSERT INTO "users"', 'INSERT INTO "playlists"']
-  const missing = required.filter((marker) => !sql.includes(marker))
-  if (missing.length) fail(`导出内容缺少关键片段：${missing.join('、')}`)
+  const counts = await verifyDump(target, expected)
+  const digest = sha256File(target)
+  const sidecar = `${target}.sha256`
+  writeFileSync(sidecar, `${digest}  ${path.basename(target)}\n`, { mode: 0o600 })
+  try {
+    chmodSync(sidecar, 0o600)
+  } catch {
+    // 同上
+  }
 
-  log(`备份完成：${size} 字节，含 users / playlists 数据`)
+  pruneBackups()
+  log(
+    `备份完成：${size} 字节 · sha256 ${digest.slice(0, 16)}… · 行数 ${counts ? JSON.stringify(counts) : '未校验'}`,
+  )
   return target
 }
 
@@ -147,7 +282,10 @@ async function liveCheck() {
     const csp = page.headers.get('content-security-policy') || ''
     if (!csp.includes("frame-ancestors 'none'")) fail('首页缺少 CSP frame-ancestors 限制')
 
-    log(`自检通过（feed 正常，首页 ${page.status}，CSP 生效）`)
+    const dump = await fetch(`${SITE}/api/backup/dump`, { redirect: 'manual' })
+    if (dump.status !== 401) fail(`/api/backup/dump 未带令牌应返回 401，实际 ${dump.status}`)
+
+    log(`自检通过（feed 正常，首页 ${page.status}，CSP 生效，备份接口关闭）`)
   } catch (error) {
     fail(`线上自检异常：${error.message}`)
   }
@@ -161,7 +299,11 @@ if (checkOnly) {
   process.exit(0)
 }
 
-const backupFile = backupDatabase()
+const backupFile = await backupDatabase()
+if (backupOnly) {
+  log(`仅备份模式（--backup-only）：未构建、未发布。${path.relative(ROOT, backupFile)}`)
+  process.exit(0)
+}
 build()
 if (dryRun) {
   log(`演练结束（--dry-run）：未发布。线上备份留在 ${path.relative(ROOT, backupFile)}`)
@@ -176,4 +318,6 @@ if (skipLiveCheck) {
 
 log('完成。')
 console.log(`  线上备份：${path.relative(ROOT, backupFile)}`)
-console.log('  该文件含用户凭据哈希，勿提交、勿外传（backups/ 已在 .gitignore 中）。')
+console.log(
+  '  该文件含用户凭据哈希与会话键（会话已改为只存 SHA-256，不再含可直接使用的令牌），勿提交、勿外传。',
+)

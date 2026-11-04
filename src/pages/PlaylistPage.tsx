@@ -32,6 +32,18 @@ export function PlaylistPage() {
     [playlist, catalog],
   )
 
+  // 曲目排列模式：自定义 = 手动顺序（可上移/下移），其余只是展示/播放顺序，不改服务端数据
+  const [order, setOrder] = useState<'custom' | 'name' | 'album' | 'artist'>('custom')
+  const ordered = useMemo(() => {
+    if (order === 'custom') return songs
+    const list = [...songs]
+    const byName = (a: Song, b: Song) => a.name.localeCompare(b.name, 'zh-Hans-CN')
+    if (order === 'name') list.sort(byName)
+    if (order === 'album') list.sort((a, b) => a.albumName.localeCompare(b.albumName, 'zh-Hans-CN') || byName(a, b))
+    if (order === 'artist') list.sort((a, b) => a.artistes.localeCompare(b.artistes, 'zh-Hans-CN') || byName(a, b))
+    return list
+  }, [songs, order])
+
   const [editing, setEditing] = useState(false)
   const [shareOpen, setShareOpen] = useState(false)
   const [pickerOpen, setPickerOpen] = useState(false)
@@ -73,9 +85,16 @@ export function PlaylistPage() {
 
   const doUnpublish = async () => {
     if (!playlist.publishedAt) return
-    if (!confirm(`将《${playlist.name}》设为私人？公开广场上的这张歌单与它的分享入口会一并撤下。`)) return
+    // 分享码是自包含的（整套歌单压缩在码里），撤下广场只清掉 feed 行，
+    // 已经发出去的链接仍然能打开 —— 文案必须说清楚，否则用户会以为撤回后旧链接也失效了
+    if (
+      !confirm(
+        `将《${playlist.name}》设为私人？\n\n它会从公开广场撤下，只有你自己能看到。\n注意：已经发出去的分享链接里内嵌了完整歌单内容，撤下广场不会让旧链接失效。`,
+      )
+    )
+      return
     await unpublish(playlist.id)
-    toast('已设为私人 · 已从广场撤下', 'info')
+    toast('已设为私人 · 已从广场撤下（已发出的分享链接仍可打开）', 'info')
   }
 
   const doExport = () => {
@@ -126,7 +145,7 @@ export function PlaylistPage() {
           <div className="hero-actions">
             <button
               className="btn btn--primary"
-              onClick={() => songs.length && playQueue(songs, 0, playlist.name)}
+              onClick={() => songs.length && playQueue(ordered, 0, playlist.name)}
               disabled={!songs.length}
             >
               <IconPlay size={13} /> 播放
@@ -173,14 +192,39 @@ export function PlaylistPage() {
             <span className="kicker">TRACKLIST</span>
             <h2>曲目编排</h2>
           </div>
-          <span className="mono">{String(songs.length).padStart(2, '0')} TRACKS</span>
+          <div className="section-head-side">
+            <div className="seg seg--sm" aria-label="曲目排列模式">
+              <button className={order === 'custom' ? 'is-on' : ''} onClick={() => setOrder('custom')} title="按歌单里的手动顺序">
+                自定义
+              </button>
+              <button className={order === 'name' ? 'is-on' : ''} onClick={() => setOrder('name')}>名称</button>
+              <button className={order === 'album' ? 'is-on' : ''} onClick={() => setOrder('album')}>专辑</button>
+              <button className={order === 'artist' ? 'is-on' : ''} onClick={() => setOrder('artist')}>演唱者</button>
+            </div>
+            <span className="mono">{String(songs.length).padStart(2, '0')} TRACKS</span>
+          </div>
         </header>
         <SongTable
-          songs={songs}
+          songs={ordered}
           label={playlist.name}
           showAlbum
           onRemove={(cid) => void removeSong(playlist.id, cid)}
-          onMove={(i, dir) => void moveSong(playlist.id, i, i + dir)}
+          // 只有「自定义」顺序才能手动上移/下移：排序视图里挪动会让人误以为改的是显示顺序
+          onMove={
+            order === 'custom'
+              ? (i, dir) => {
+                  // 表格显示的是「曲库能解析到」的子集，下标与 playlist.songs 不一定对齐；
+                  // 直接拿显示下标去 splice 会移动错曲目。用 cid 找回原始位置再交换。
+                  const fromCid = songs[i]?.cid
+                  const toCid = songs[i + dir]?.cid
+                  if (!fromCid || !toCid) return
+                  const from = playlist.songs.indexOf(fromCid)
+                  const to = playlist.songs.indexOf(toCid)
+                  if (from < 0 || to < 0) return
+                  void moveSong(playlist.id, from, to)
+                }
+              : undefined
+          }
           empty={
             <span>
               歌单还是空的。<button className="text-link" onClick={() => setPickerOpen(true)}>加入歌单</button>

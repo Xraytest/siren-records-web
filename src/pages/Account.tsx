@@ -101,12 +101,18 @@ export function Account() {
   const importFile = async (file: File | undefined) => {
     if (!file) return
     try {
+      // 先按体积挡掉超大文件，再把原文交给 parseImport 统一做长度与结构校验。
+      // 早期这里自己 JSON.parse + 再 stringify 一次，等于在 8MB 护栏之前就把整份文件
+      // 解析并重新序列化了一遍（峰值内存翻倍），恶意文件可以卡死标签页。
+      if (file.size > 8_000_000) throw new Error('too-large')
       const text = await file.text()
-      const raw = JSON.parse(text) as { playlists?: unknown }
-      const source = Array.isArray(raw.playlists) ? JSON.stringify(raw.playlists) : text
-      const list = parseImport(source)
+      const list = parseImport(text)
       if (!list.length) throw new Error('empty')
       const n = await importMany(list)
+      if (n === 0) {
+        toast('没有可导入的歌单（可能曲目已下架或数量超限）', 'warn')
+        return
+      }
       toast(`已导入 ${n} 张歌单`, 'ok')
     } catch {
       toast('无法识别该备份文件', 'warn')

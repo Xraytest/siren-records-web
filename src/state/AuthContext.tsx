@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
-import { api, ApiError, errorText, readToken, setToken } from '../lib/api'
+import { api, ApiError, errorText, readToken, setToken, setUnauthorizedHandler } from '../lib/api'
 import type { User } from '../lib/types'
 
 export interface AuthResult {
@@ -29,6 +29,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
   const [userCount, setUserCount] = useState(0)
   const [ready, setReady] = useState(false)
+
+  /** 清本地会话并把播放器一起复位（播放队列里可能有私人歌单名与断点） */
+  const clearSession = useCallback(() => {
+    setToken(null)
+    setUser(null)
+    try {
+      window.dispatchEvent(new Event('siren:logout'))
+    } catch {
+      // 极端环境（无 window）下忽略
+    }
+  }, [])
+
+  // 任何接口返回 401（令牌过期/被撤销）都统一退出，而不是让 UI 停在「假登录」状态
+  useEffect(() => {
+    setUnauthorizedHandler(clearSession)
+    return () => setUnauthorizedHandler(null)
+  }, [clearSession])
 
   useEffect(() => {
     let alive = true
@@ -87,9 +104,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch {
       // 服务端不可达时依然清理本地会话
     }
-    setToken(null)
-    setUser(null)
-  }, [])
+    clearSession()
+  }, [clearSession])
 
   const updateProfile = useCallback(
     async (patch: Partial<Pick<User, 'name' | 'bio'>>): Promise<AuthResult> => {

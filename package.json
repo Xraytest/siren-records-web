@@ -11,7 +11,8 @@
     "test": "node --test \"tests/*.test.mts\"",
     "deploy": "npm run build && wrangler deploy",
     "deploy:safe": "node scripts/deploy-safe.mjs",
-    "db:migrate": "wrangler d1 migrations apply siren-records --remote",
+    "db:migrate": "node scripts/migrate.mjs",
+    "db:migrate:check": "node scripts/migrate.mjs --check",
     "lint": "oxlint",
     "preview": "vite preview"
   },

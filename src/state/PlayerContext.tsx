@@ -12,6 +12,7 @@ import { toast } from '../lib/toast'
 import { loadCatalog } from '../lib/catalog'
 import { isInstrumental, useSettings } from '../lib/settings'
 import { advanceTrack, retreatTrack, type RepeatMode } from '../lib/player-queue'
+import { STALL_MS, canRetry, retryDelay, shouldClearRetry } from '../lib/retry-policy'
 import type { LyricLine, Song } from '../lib/types'
 
 export type { RepeatMode }
@@ -53,11 +54,10 @@ const PlayerContext = createContext<PlayerValue | null>(null)
 /** 播放器偏好与上次播放记录保存在浏览器本地 */
 const STORE_KEY = 'siren:player'
 
-/** 自动重连：初始 800ms，之后 1.6s / 3.2s / 6.4s，共 4 次；之后交给用户手动重试 */
-const MAX_RETRY = 4
-const RETRY_BASE_MS = 800
-/** 播放中超过这个时长没有任何进度且未缓冲完成，判定为卡死并重连 */
-const STALL_MS = 15_000
+/**
+ * 自动重连的常量与判定见 lib/retry-policy.ts：
+ * 「算一次成功」的门槛是连续稳定播放 STABLE_MS（10s），而不是一 resolve 就清零。
+ */
 
 interface StoredPlayer {
   cids: string[]
@@ -164,6 +164,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const epochRef = useRef(0)
   const retryCountRef = useRef(0)
   const retryTimerRef = useRef<number | null>(null)
+  /** 本次「稳定播放」起点：只有连续播满 STABLE_MS 才允许清零重试计数 */
+  const stableSinceRef = useRef(0)
   const playedRef = useRef<Set<number>>(new Set())
   const progressAtRef = useRef(0)
   const recoveredRef = useRef(false)
@@ -222,8 +224,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     audio.play().then(
       () => {
         if (epochRef.current !== epoch) return
-        retryCountRef.current = 0
-        setRetrying(0)
+        // 注意：这里不能清零 retryCount —— play() 在「刚开始出声」时就 resolve，
+        // 而这时流可能马上又被掐断。清零只发生在连续稳定播放 STABLE_MS 之后（见 onTime）。
         if (recoveredRef.current) {
           recoveredRef.current = false
           toast('网络波动，已自动恢复播放', 'info')
@@ -250,11 +252,17 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const scheduleRetry = useCallback(() => {
     const audio = getAudio()
     if (!live.current.playing) return
-    if (retryCountRef.current >= MAX_RETRY) {
+    // 同一次加载失败通常会同时触发 <audio> 的 error 事件与 play() 的 rejection，
+    // 两者都调到这里；若不合并就会「一次故障消耗两次预算」，实测 4 次预算只够 2 次故障。
+    if (retryTimerRef.current !== null) return
+    if (!canRetry(retryCountRef.current)) {
       clearRetryTimer()
       setPlayingBoth(false)
       setLoading(false)
       setRetrying(0)
+      // 放弃自动重连后把预算清空：用户下一次手动播放/重试重新获得完整的 4 次
+      retryCountRef.current = 0
+      stableSinceRef.current = 0
       toast('音频连续加载失败，已暂停。网络恢复后点击播放即可继续', 'warn')
       return
     }
@@ -278,7 +286,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       audio.load()
       progressAtRef.current = Date.now()
       void tryPlay()
-    }, RETRY_BASE_MS * 2 ** (attempt - 1))
+    }, retryDelay(attempt))
   }, [clearRetryTimer, getAudio, setPlayingBoth, tryPlay])
 
   scheduleRetryRef.current = scheduleRetry
@@ -342,7 +350,9 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       setLoading(false)
       return
     }
-    if (result.restart) {
+    // restart 只表示「从 0 秒重放」；列表循环绕回队首时 result.index 已经变了，
+    // 必须走 startAt 换曲，否则会把队尾那首一直重播（「选了列表循环但还是原地循环」的根因）。
+    if (result.restart && result.index === state.index) {
       playedRef.current.add(state.index)
       retryCountRef.current = 0
       setRetrying(0)
@@ -363,6 +373,51 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     },
     [startAt],
   )
+
+  /** 登出/会话失效：清空队列与本地记录，避免共享设备上残留上个账号的私人歌单名与断点 */
+  const resetPlayer = useCallback(() => {
+    const audio = getAudio()
+    clearRetryTimer()
+    epochRef.current += 1
+    audio.pause()
+    audio.removeAttribute('src')
+    loadedCidRef.current = null
+    try {
+      audio.load()
+    } catch {
+      // 部分浏览器对空 src 调 load 会抛错，忽略即可
+    }
+    playedRef.current = new Set()
+    pendingSeekRef.current = null
+    retryCountRef.current = 0
+    stableSinceRef.current = 0
+    recoveredRef.current = false
+    hadQueueRef.current = false
+    live.current.queue = []
+    live.current.index = 0
+    live.current.label = ''
+    live.current.playing = false
+    setQueue([])
+    setIndex(0)
+    setContextLabel('')
+    setPlaying(false)
+    setLoading(false)
+    setRetrying(0)
+    setCurrentTime(0)
+    setDuration(0)
+    setLyrics([])
+    try {
+      localStorage.removeItem(STORE_KEY)
+    } catch {
+      // 隐私模式下忽略
+    }
+  }, [clearRetryTimer, getAudio])
+
+  useEffect(() => {
+    const onLogout = () => resetPlayer()
+    window.addEventListener('siren:logout', onLogout)
+    return () => window.removeEventListener('siren:logout', onLogout)
+  }, [resetPlayer])
 
   // 还原上次的播放队列与进度（保持暂停，不自动出声）
   useEffect(() => {
@@ -461,6 +516,11 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     const onTime = () => {
       progressAtRef.current = Date.now()
       setCurrentTime(audio.currentTime)
+      // 连续播满 STABLE_MS 才算这次连接真的成功，此时才把重试预算还给用户
+      if (shouldClearRetry(retryCountRef.current, stableSinceRef.current, Date.now())) {
+        retryCountRef.current = 0
+        setRetrying(0)
+      }
     }
     const onMeta = () => {
       const total = Number.isFinite(audio.duration) ? audio.duration : 0
@@ -485,9 +545,9 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     }
     const onPlaying = () => {
       progressAtRef.current = Date.now()
+      // 每次重新出声都重置「稳定窗口」起点，但不清零重试计数（见 STABLE_MS 的说明）
+      stableSinceRef.current = Date.now()
       setLoading(false)
-      retryCountRef.current = 0
-      setRetrying(0)
     }
     const onCanPlay = () => setLoading(false)
     const onEnded = () => handleEnded()

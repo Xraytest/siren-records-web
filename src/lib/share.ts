@@ -5,17 +5,124 @@ export function encodeShare(payload: SharePayload): string {
   return LZString.compressToEncodedURIComponent(JSON.stringify(payload))
 }
 
-// 分享码是外部输入：LZString 的展开比很高，几 KB 的码可以解出上百 MB，
-// 因此解码前先按码长与解压后长度双重限流，避免一个链接就把标签页撑爆。
+// 分享码是外部输入：LZString 的展开比没有理论上限（实测 2 万字符的码可解出 4740 万字符、
+// 峰值 RSS 150MB），而 `decompressFromEncodedURIComponent` 是"全部解开再返回"，
+// 事后检查 `json.length` 时内存已经吃满了。所以这里内置一份带预算的解压器：
+// 一旦产出超过 SHARE_JSON_MAX 就立刻中止，绝不把整块结果拼出来。
 const CODE_MAX = 20_000
 const SHARE_JSON_MAX = 4_000_000
 const SHARE_SONGS_MAX = 2_000
 
+// lz-string 的 URI-safe 字母表（压缩端 `compressToEncodedURIComponent` 与解压端必须一致）
+const KEY_STR = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+-$'
+
+/**
+ * 带输出预算的 LZString 解压（算法与 lz-string 1.5.0 的 `_decompress` 等价，MIT）。
+ * @returns 解压结果；超预算、码损坏或字符越界时返回 null
+ */
+function decompressWithBudget(input: string, budget: number): string | null {
+  const length = input.length
+  let index = 1
+  let val = KEY_STR.indexOf(input.charAt(0))
+  if (val < 0) return null
+  let position = 32 // 位掩码，按 5 bit/字符从高位往低位走
+  const resetValue = 32
+
+  /** 读 width 位；越界时按原始实现用 0 填充（对应 undefined & mask === 0） */
+  const takeBits = (width: number): number => {
+    let bits = 0
+    let maxpower = 1 << width
+    let power = 1
+    while (power !== maxpower) {
+      const resb = val & position
+      position >>= 1
+      if (position === 0) {
+        position = resetValue
+        if (index >= length) {
+          val = 0
+        } else {
+          val = KEY_STR.indexOf(input.charAt(index))
+          index += 1
+          if (val < 0) return -1
+        }
+      }
+      bits |= (resb > 0 ? 1 : 0) * power
+      power <<= 1
+    }
+    return bits
+  }
+
+  const dictionary: (string | number)[] = [0, 1, 2]
+  let bits = takeBits(2)
+  if (bits < 0) return null
+  let c: string
+  if (bits === 0) {
+    const code = takeBits(8)
+    if (code < 0) return null
+    c = String.fromCharCode(code)
+  } else if (bits === 1) {
+    const code = takeBits(16)
+    if (code < 0) return null
+    c = String.fromCharCode(code)
+  } else {
+    return ''
+  }
+  dictionary[3] = c
+  let w = c
+  const result: string[] = [c]
+  let total = c.length
+
+  let enlargeIn = 4
+  let dictSize = 4
+  let numBits = 3
+  while (true) {
+    if (index > length) return null
+    bits = takeBits(numBits)
+    if (bits < 0) return null
+    if (bits === 0) {
+      const code = takeBits(8)
+      if (code < 0) return null
+      dictionary[dictSize++] = String.fromCharCode(code)
+      bits = dictSize - 1
+      enlargeIn -= 1
+    } else if (bits === 1) {
+      const code = takeBits(16)
+      if (code < 0) return null
+      dictionary[dictSize++] = String.fromCharCode(code)
+      bits = dictSize - 1
+      enlargeIn -= 1
+    } else if (bits === 2) {
+      return result.join('')
+    }
+    if (enlargeIn === 0) {
+      enlargeIn = 1 << numBits
+      numBits += 1
+    }
+    let entry: string
+    const found = dictionary[bits]
+    if (found !== undefined) entry = String(found)
+    else if (bits === dictSize) entry = w + w.charAt(0)
+    else return null
+    total += entry.length
+    // 预算在这里生效：超了就直接放弃，不再继续拼接
+    if (total > budget) return null
+    result.push(entry)
+    dictionary[dictSize++] = w + entry.charAt(0)
+    enlargeIn -= 1
+    w = entry
+    if (enlargeIn === 0) {
+      enlargeIn = 1 << numBits
+      numBits += 1
+    }
+  }
+}
+
 export function decodeShare(code: string): SharePayload | null {
   try {
     if (typeof code !== 'string' || code.length > CODE_MAX) return null
-    const json = LZString.decompressFromEncodedURIComponent(code)
-    if (!json || json.length > SHARE_JSON_MAX) return null
+    // 分享码里的空格等价于 `+`
+    const json = decompressWithBudget(code.replace(/ /g, '+'), SHARE_JSON_MAX)
+    if (!json) return null
     const data = JSON.parse(json) as SharePayload
     if (data?.t !== 'siren-playlist' || !Array.isArray(data.songs)) return null
     return {

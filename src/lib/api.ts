@@ -9,6 +9,18 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * 全局 401 回调：会话过期时统一清理登录态。
+ * 早期只在启动时的 /auth/me 里处理 401，其它接口过期后 UI 仍显示「已登录」，
+ * 每次操作都失败却提示"请先登录"。注意只在「本次请求确实带了 token」时触发，
+ * 避免把未登录时的登录失败也当成会话过期。
+ */
+let onUnauthorized: (() => void) | null = null
+
+export function setUnauthorizedHandler(handler: (() => void) | null) {
+  onUnauthorized = handler
+}
+
 export function readToken(): string | null {
   try {
     return localStorage.getItem(TOKEN_KEY)
@@ -50,6 +62,7 @@ export async function api<T>(path: string, options: RequestOptions = {}): Promis
   }
 
   if (!res.ok) {
+    if (res.status === 401 && token) onUnauthorized?.()
     const data = (await res.json().catch(() => null)) as { error?: string } | null
     throw new ApiError(res.status, data?.error || `请求失败 (${res.status})`)
   }

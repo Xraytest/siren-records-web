@@ -9,8 +9,10 @@ StartLimitBurst=5
 [Service]
 Type=oneshot
 SyslogIdentifier=siren-d1-backup
-WorkingDirectory=%h/siren-backup
-ExecStart=/usr/bin/env bash %h/siren-backup/backup-d1.sh
+# @DEST@ 由 install.sh 按 SIREN_BACKUP_HOME 替换：早期版本这里写死 %h/siren-backup，
+# 换目录安装时定时器会指向不存在的脚本。
+WorkingDirectory=@DEST@
+ExecStart=/usr/bin/env bash @DEST@/backup-d1.sh
 TimeoutStartSec=900
 Nice=10
 IOSchedulingClass=idle
@@ -21,13 +23,16 @@ PrivateTmp=true
 PrivateDevices=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=%h/siren-backup
+ReadWritePaths=@DEST@
 ProtectKernelTunables=true
 ProtectControlGroups=true
 ProtectKernelModules=true
-RestrictAddressFamilies=AF_INET AF_INET6
+# AF_UNIX 是 gpg-agent 的 unix socket 与 nss 解析走的族：没有它 GPG 备份会每晚失败
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 RestrictNamespaces=true
 RestrictSUIDSGID=true
 LockPersonality=true
 MemoryMax=256M
 TasksMax=64
+# GPG 需要可写的 keyring 状态目录；默认 ~/.gnupg 在 ProtectHome=read-only 下不可写
+Environment=GNUPGHOME=@DEST@/gnupg

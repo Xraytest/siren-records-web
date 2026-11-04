@@ -6,6 +6,7 @@ import {
 } from './Icons'
 import { AddToPlaylist } from './AddToPlaylist'
 import { formatDuration } from '../lib/format'
+import { MAX_RETRY } from '../lib/retry-policy'
 import { usePlayer } from '../state/PlayerContext'
 import { useAuth } from '../state/AuthContext'
 import { openAuth } from '../lib/authDialog'
@@ -88,7 +89,7 @@ export function PlayerBar() {
             <span className="playerbar-time mono">
               {p.retrying > 0 && (
                 <button className="playerbar-retry" onClick={p.retryNow} title="点击立即重连">
-                  重连 {p.retrying}/4
+                  重连 {p.retrying}/{MAX_RETRY}
                 </button>
               )}
               {formatDuration(p.currentTime)} / {formatDuration(p.duration)}

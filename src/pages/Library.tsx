@@ -79,9 +79,15 @@ export function Library() {
   const importFile = async (file: File | undefined) => {
     if (!file) return
     try {
+      if (file.size > 8_000_000) throw new Error('too-large')
       const list = parseImport(await file.text())
       if (!list.length) throw new Error('empty')
       const n = await importMany(list)
+      // importMany 全部被拒（配额/越权/服务端错误）时返回 0，不能报"载入 0 组"来当成功
+      if (n === 0) {
+        toast('档案已解析，但没有歌单被写入（可能超出数量上限或服务端拒绝）', 'warn')
+        return
+      }
       toast(`✓ 已解析并载入 ${n} 组声学序列，轨序完整还原`, 'ok')
     } catch {
       toast('档案无法解析：需要包含 songs 列表的歌单文件，或他人分享的快照码', 'warn')

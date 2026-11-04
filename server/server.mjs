@@ -51,6 +51,9 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS playlists_user ON playlists(userId, updatedAt DESC);
   CREATE INDEX IF NOT EXISTS playlists_published ON playlists(publishedAt DESC);
+  CREATE INDEX IF NOT EXISTS playlists_publish_code ON playlists(publishCode);
+  CREATE INDEX IF NOT EXISTS sessions_expires ON sessions(expiresAt);
+  CREATE INDEX IF NOT EXISTS sessions_user ON sessions(userId);
 `)
 
 /* ---------- helpers ---------- */
@@ -73,6 +76,7 @@ const authHits = new Map()
 function authAllowed(req) {
   const key = req.socket?.remoteAddress || 'unknown'
   const now = Date.now()
+  pruneHits(authHits, now)
   const hit = authHits.get(key)
   if (!hit || hit.reset < now) {
     authHits.set(key, { reset: now + AUTH_WINDOW_MS, n: 1 })
@@ -82,15 +86,22 @@ function authAllowed(req) {
   return hit.n <= AUTH_MAX_PER_WINDOW
 }
 
-if (authHits.size > 4096) {
-  // 防止 Map 无限增长：窗口极短，定期整体清理即可
-  setInterval(() => authHits.clear(), AUTH_WINDOW_MS).unref()
+function pruneHits(map, now) {
+  if (map.size < 2048) return
+  for (const [key, hit] of map) if (hit.reset < now) map.delete(key)
 }
 
+// 不要按 hex 解码再比：`Buffer.from(x,'hex')` 会在第一个非 hex 字符处截断，
+// 于是任意令牌都能与 base64 形态的令牌比成相等（实测 'x' 与 'q7Rb+0lP/Zm2kQ=='）。
+// 统一按 utf8 字节比较；长度不同时用 sha256 摘要抹平长度差异。
 function safeEqual(a, b) {
-  const bufA = Buffer.from(a, 'hex')
-  const bufB = Buffer.from(b, 'hex')
-  return bufA.length === bufB.length && timingSafeEqual(bufA, bufB)
+  if (typeof a !== 'string' || typeof b !== 'string') return false
+  const bufA = Buffer.from(a, 'utf8')
+  const bufB = Buffer.from(b, 'utf8')
+  if (bufA.length === bufB.length) return timingSafeEqual(bufA, bufB)
+  const digA = createHash('sha256').update(bufA).digest()
+  const digB = createHash('sha256').update(bufB).digest()
+  return timingSafeEqual(digA, digB)
 }
 
 function makeIdentity(name) {
@@ -125,8 +136,10 @@ function clipText(value, max = 2000) {
 
 function cidList(value) {
   if (!Array.isArray(value)) return []
-  return Array.from(new Set(value.filter((v) => typeof v === 'string' && v.length < 64))).slice(0, 500)
+  return Array.from(new Set(value.filter((v) => typeof v === 'string' && v.length < 64))).slice(0, MAX_SONGS_PER_PLAYLIST)
 }
+
+const MAX_SONGS_PER_PLAYLIST = 500
 
 function tagList(value) {
   if (!Array.isArray(value)) return []
@@ -139,10 +152,44 @@ const COVER_MAX = 200_000
 const OFFICIAL_IMAGE_PREFIX = 'https://web.hycdn.cn/siren/pic/'
 function normalizeCover(value) {
   if (typeof value !== 'string' || !value) return null
-  const cover = value.slice(0, COVER_MAX)
-  if (cover.startsWith('data:image/')) return cover
-  if (cover.startsWith(OFFICIAL_IMAGE_PREFIX)) return cover
+  // 超长直接丢弃而不是截断：截断后的 base64 一定渲染不出来，等于静默写坏数据
+  if (value.length > COVER_MAX) return null
+  if (value.startsWith('data:image/')) return value
+  if (value.startsWith(OFFICIAL_IMAGE_PREFIX)) return value
   return null
+}
+
+/** 广场里只保留官方 CDN 封面，内嵌 data: 一律不公开返回 */
+function publicCover(value) {
+  return typeof value === 'string' && value.startsWith(OFFICIAL_IMAGE_PREFIX) ? value : null
+}
+
+// 曲目编号（含封面曲目编号）都应是纯数字串，与 Worker 同一规则
+function songCidOrNull(value) {
+  if (typeof value !== 'string') return null
+  const cid = value.trim()
+  return /^\d{1,16}$/.test(cid) ? cid : null
+}
+
+const PUBLISH_CODE_MAX = 20_000
+const PUBLISH_CODE_RE = /^[A-Za-z0-9+\-$]+$/
+function normalizePublishCode(value) {
+  if (typeof value !== 'string') throw new HttpError(400, '分享码缺失')
+  const code = value.trim()
+  if (!code) throw new HttpError(400, '分享码缺失')
+  if (code.length > PUBLISH_CODE_MAX) throw new HttpError(413, '分享码过长')
+  if (!PUBLISH_CODE_RE.test(code)) throw new HttpError(400, '分享码包含非法字符')
+  return code
+}
+
+// 一行坏 JSON 不该让整个 feed 500（Worker 侧同样容错）
+function parseJson(value, fallback) {
+  if (typeof value !== 'string') return fallback
+  try {
+    return JSON.parse(value) ?? fallback
+  } catch {
+    return fallback
+  }
 }
 
 class HttpError extends Error {
@@ -158,6 +205,10 @@ function json(res, status, payload) {
     'Content-Type': 'application/json; charset=utf-8',
     'Content-Length': Buffer.byteLength(body),
     'Cache-Control': 'no-store',
+    // 与 Worker 对齐：同一套安全头，避免「本地测过就等于线上安全」的错觉
+    'X-Content-Type-Options': 'nosniff',
+    'Strict-Transport-Security': 'max-age=31536000; includeSubDomains',
+    'Referrer-Policy': 'no-referrer',
   })
   res.end(body)
 }
@@ -178,11 +229,16 @@ async function readJson(req) {
   }
 }
 
+// 会话只存令牌的 SHA-256，不存明文：备份导出的是 hash，dump 泄露也无法直接冒充会话
+function sessionKey(token) {
+  return createHash('sha256').update(token, 'utf8').digest('hex')
+}
+
 function issueSession(userId) {
   const token = randomBytes(32).toString('hex')
   const now = Date.now()
   db.prepare('INSERT INTO sessions (token, userId, createdAt, expiresAt) VALUES (?, ?, ?, ?)').run(
-    token,
+    sessionKey(token),
     userId,
     now,
     now + SESSION_DAYS * 86400_000,
@@ -199,7 +255,7 @@ function currentUser(req) {
       `SELECT u.* FROM sessions s JOIN users u ON u.id = s.userId
        WHERE s.token = ? AND s.expiresAt > ?`,
     )
-    .get(token, Date.now())
+    .get(sessionKey(token), Date.now())
   return row ? toUser(row) : null
 }
 
@@ -223,6 +279,7 @@ const backupHits = new Map()
 function backupAllowed(req) {
   const key = req.socket.remoteAddress || 'unknown'
   const now = Date.now()
+  pruneHits(backupHits, now)
   const hit = backupHits.get(key)
   if (!hit || hit.reset < now) {
     backupHits.set(key, { reset: now + BACKUP_WINDOW_MS, n: 1 })
@@ -230,6 +287,25 @@ function backupAllowed(req) {
   }
   hit.n += 1
   return hit.n <= BACKUP_MAX_PER_WINDOW
+}
+
+/* ---------- 音频/歌词代理限速（与 Worker 同一档：每分钟 120 次） ---------- */
+
+const PROXY_WINDOW_MS = 60_000
+const PROXY_MAX_PER_WINDOW = 120
+const proxyHits = new Map()
+
+function proxyAllowed(req) {
+  const key = req.socket.remoteAddress || 'unknown'
+  const now = Date.now()
+  pruneHits(proxyHits, now)
+  const hit = proxyHits.get(key)
+  if (!hit || hit.reset < now) {
+    proxyHits.set(key, { reset: now + PROXY_WINDOW_MS, n: 1 })
+    return true
+  }
+  hit.n += 1
+  return hit.n <= PROXY_MAX_PER_WINDOW
 }
 
 const BACKUP_TABLES = ['users', 'sessions', 'playlists']
@@ -264,13 +340,16 @@ CREATE TABLE IF NOT EXISTS playlists (
   publishCode TEXT
 );
 CREATE INDEX IF NOT EXISTS playlists_user ON playlists(userId, updatedAt DESC);
-CREATE INDEX IF NOT EXISTS playlists_published ON playlists(publishedAt DESC);`
+CREATE INDEX IF NOT EXISTS playlists_published ON playlists(publishedAt DESC);
+CREATE INDEX IF NOT EXISTS playlists_publish_code ON playlists(publishCode);
+CREATE INDEX IF NOT EXISTS sessions_expires ON sessions(expiresAt);
+CREATE INDEX IF NOT EXISTS sessions_user ON sessions(userId);`
 
 function sqlLiteral(value) {
   if (value === null || value === undefined) return 'NULL'
   if (typeof value === 'number') return Number.isFinite(value) ? String(value) : 'NULL'
   if (typeof value === 'boolean') return value ? '1' : '0'
-  if (Buffer.isBuffer(value)) return `X'${value.toString('hex')}'`
+  if (value instanceof Uint8Array) return `X'${Buffer.from(value).toString('hex')}'`
   // 单引号按 SQL 规则双写；NUL 没法直接写进字面量，用 char(0) 拼接保证逐字节还原
   return sqlText(value)
 }
@@ -359,7 +438,7 @@ function insertPlaylist(userId, input, now = Date.now()) {
     clipText(input.name, 80).trim() || '未命名歌单',
     clipText(input.description),
     JSON.stringify(tagList(input.tags)),
-    typeof input.coverSongCid === 'string' ? input.coverSongCid : null,
+    songCidOrNull(input.coverSongCid),
     // 创建时也走白名单：否则可以把任意字符串（最长到 body 上限）塞进 cover 白占存储
     typeof input.cover === 'string' ? normalizeCover(input.cover) : null,
     JSON.stringify(cidList(input.songs)),
@@ -369,22 +448,36 @@ function insertPlaylist(userId, input, now = Date.now()) {
   return toPlaylist(db.prepare('SELECT * FROM playlists WHERE id = ?').get(id))
 }
 
+const FEED_PAGE = 60
+const FEED_PER_USER = 6
+
 function feedItems() {
   const rows = db
     .prepare(
       `SELECT p.*, u.name AS authorName FROM playlists p JOIN users u ON u.id = p.userId
-       WHERE p.publishedAt IS NOT NULL ORDER BY p.publishedAt DESC LIMIT 60`,
+       WHERE p.publishedAt IS NOT NULL ORDER BY p.publishedAt DESC LIMIT 360`,
     )
     .all()
-  return rows.map((row) => ({
+  // 与线上 Worker 一致：单账号最多占 FEED_PER_USER 张，避免一个人挤满整个广场
+  const perUser = new Map()
+  const picked = []
+  for (const row of rows) {
+    const used = perUser.get(row.userId) || 0
+    if (used >= FEED_PER_USER) continue
+    perUser.set(row.userId, used + 1)
+    picked.push(row)
+    if (picked.length >= FEED_PAGE) break
+  }
+  return picked.map((row) => ({
     code: row.publishCode,
     name: row.name,
     description: row.description,
     authorName: row.authorName,
     authorId: row.userId,
-    songCount: JSON.parse(row.songs).length,
-    cover: row.cover || null,
-    tags: JSON.parse(row.tags),
+    songCount: parseJson(row.songs, []).length,
+    // 广场只回官方 CDN 封面：内嵌 data: 封面留着 60×200KB，匿名 feed 会被打成 12MB
+    cover: publicCover(row.cover),
+    tags: parseJson(row.tags, []),
     at: row.publishedAt,
   }))
 }
@@ -397,7 +490,10 @@ async function handleApi(req, res, pathname) {
 
   // --- auth ---
   if (parts[1] === 'auth') {
-    if (!authAllowed(req)) throw new HttpError(429, '尝试过于频繁，请稍后再试')
+    // 只对会产生算力/写操作的动作计数：GET /me 与 logout 不该吃掉同一条配额
+    // （否则共享出口下 20 个用户/分钟打开页面就会把正常用户 429 掉）
+    const countedAction = method === 'POST' && (parts[2] === 'register' || parts[2] === 'login')
+    if (countedAction && !authAllowed(req)) throw new HttpError(429, '尝试过于频繁，请稍后再试')
 
     if (parts[2] === 'register' && method === 'POST') {
       const body = await readJson(req)
@@ -409,15 +505,23 @@ async function handleApi(req, res, pathname) {
       if (exists) throw new HttpError(409, '该代号已被占用')
       const salt = randomBytes(16).toString('hex')
       const { id, handle } = makeIdentity(name)
-      db.prepare('INSERT INTO users (id, name, handle, bio, salt, hash, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
-        id,
-        name,
-        handle,
-        '',
-        salt,
-        hashPassword(password, salt),
-        Date.now(),
-      )
+      try {
+        db.prepare('INSERT INTO users (id, name, handle, bio, salt, hash, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
+          id,
+          name,
+          handle,
+          '',
+          salt,
+          hashPassword(password, salt),
+          Date.now(),
+        )
+      } catch (error) {
+        // check-then-insert 竞态：并发注册同名时 UNIQUE 约束会抛出，语义应当是 409 而不是 500
+        if (/UNIQUE|constraint/i.test(String(error?.message ?? error))) {
+          throw new HttpError(409, '该代号已被占用')
+        }
+        throw error
+      }
       const token = issueSession(id)
       const user = toUser(db.prepare('SELECT * FROM users WHERE id = ?').get(id))
       return json(res, 200, { token, user, userCount: userCount() })
@@ -441,7 +545,7 @@ async function handleApi(req, res, pathname) {
     if (parts[2] === 'logout' && method === 'POST') {
       const header = req.headers.authorization || ''
       const token = header.startsWith('Bearer ') ? header.slice(7).trim() : ''
-      if (token) db.prepare('DELETE FROM sessions WHERE token = ?').run(token)
+      if (token) db.prepare('DELETE FROM sessions WHERE token = ?').run(sessionKey(token))
       return json(res, 200, { ok: true })
     }
 
@@ -519,7 +623,7 @@ async function handleApi(req, res, pathname) {
         if (typeof body.description === 'string') patch.description = clipText(body.description)
         if (Array.isArray(body.tags)) patch.tags = tagList(body.tags)
         if (typeof body.coverSongCid === 'string' || body.coverSongCid === null) {
-          patch.coverSongCid = body.coverSongCid
+          patch.coverSongCid = songCidOrNull(body.coverSongCid)
         }
         return json(res, 200, { playlist: persist(row, patch) })
       }
@@ -542,6 +646,10 @@ async function handleApi(req, res, pathname) {
             songs.push(cid)
             added++
           }
+        }
+        // 单次只限 500 条不够：循环调用能把单行撑到无界
+        if (songs.length > MAX_SONGS_PER_PLAYLIST) {
+          throw new HttpError(409, `单张歌单最多 ${MAX_SONGS_PER_PLAYLIST} 首，请先删减`)
         }
         const saved = persist(row, {
           songs,
@@ -578,15 +686,20 @@ async function handleApi(req, res, pathname) {
 
     if (action === 'publish' && method === 'POST') {
       const body = await readJson(req)
-      const code = typeof body.code === 'string' ? body.code.slice(0, 12000) : ''
-      if (!code) throw new HttpError(400, '缺少分享码')
+      const code = normalizePublishCode(body.code)
+      // 与 Worker 一致：占码与更新放在同一条语句里，避免并发发布造成重码
+      const claim = db
+        .prepare(
+          `UPDATE playlists SET publishCode = ? WHERE id = ? AND userId = ?
+             AND NOT EXISTS (SELECT 1 FROM playlists WHERE publishCode = ? AND id <> ?)`,
+        )
+        .run(code, row.id, row.userId, code, row.id)
+      if (!claim.changes) throw new HttpError(409, '这个分享码已被其它歌单占用')
       const now = Date.now()
-      const saved = persist(row, {
-        publishedAt: now,
-        publishCode: code,
-        cover: normalizeCover(body.cover),
-        updatedAt: now,
-      })
+      const patch = { publishedAt: now, publishCode: code, updatedAt: now }
+      // 只有显式传了 cover 才动封面：脚本式发布不该把已设好的封面清成 null
+      if ('cover' in body) patch.cover = normalizeCover(body.cover)
+      const saved = persist(row, patch)
       const entry = feedItems().find((item) => item.code === code) || null
       return json(res, 200, { playlist: saved, entry })
     }
@@ -601,13 +714,15 @@ async function handleApi(req, res, pathname) {
 
   // --- backup：运维备份用的整库导出，必须带 Bearer BACKUP_TOKEN ---
   if (parts[1] === 'backup' && parts[2] === 'dump') {
-    if (method !== 'GET') throw new HttpError(405, '不支持的方法')
     const configured = String(process.env.BACKUP_TOKEN || '').trim()
+    // 未配置时对所有方法一律 404：先判方法会让 POST 得到 405，等于确认这个隐藏入口存在
     if (configured.length < BACKUP_MIN_TOKEN) throw new HttpError(404, '接口不存在')
+    if (method !== 'GET') throw new HttpError(405, '不支持的方法')
+    // 限速放在令牌校验之前：否则猜令牌完全不消耗配额
+    if (!backupAllowed(req)) throw new HttpError(429, '请求过于频繁，请稍后再试')
     const header = req.headers.authorization || ''
     const token = header.startsWith('Bearer ') ? header.slice(7).trim() : ''
     if (!token || !safeEqual(token, configured)) throw new HttpError(401, '未授权')
-    if (!backupAllowed(req)) throw new HttpError(429, '请求过于频繁，请稍后再试')
     const dump = dumpDatabase()
     const digest = createHash('sha256').update(dump.sql, 'utf8').digest('hex')
     res.writeHead(200, {
@@ -629,6 +744,8 @@ async function handleApi(req, res, pathname) {
   if (parts[1] === 'audio' && parts[2] && (method === 'GET' || method === 'HEAD')) {
     const cid = parts[2]
     if (!/^\d{1,12}$/.test(cid)) throw new HttpError(400, '曲目编号不合法')
+    // 匿名出站代理：不限速就变成「拿本站当放大器打官方接口」
+    if (!proxyAllowed(req)) throw new HttpError(429, '请求过于频繁，请稍后再试')
     const source = await resolveAudio(cid)
     if (!source) throw new HttpError(502, '无法获取音频地址')
     res.writeHead(302, { Location: source, 'Cache-Control': 'no-store' })
@@ -639,6 +756,7 @@ async function handleApi(req, res, pathname) {
   if (parts[1] === 'lyric' && parts[2] && (method === 'GET' || method === 'HEAD')) {
     const cid = parts[2]
     if (!/^\d{1,12}$/.test(cid)) throw new HttpError(400, '曲目编号不合法')
+    if (!proxyAllowed(req)) throw new HttpError(429, '请求过于频繁，请稍后再试')
     const source = await resolveLyric(cid)
     if (!source) {
       // 纯音乐等没有歌词的曲目：返回空内容，避免前端产生错误日志
@@ -646,8 +764,16 @@ async function handleApi(req, res, pathname) {
       res.end()
       return
     }
-    res.writeHead(302, { Location: source, 'Cache-Control': 'no-store' })
-    res.end()
+    // 与 Worker 一致：同源返回歌词文本，不再 302 到 CDN（否则 CSP connect-src 必须额外放行）
+    const lyrics = await fetchLyricText(source)
+    if (!lyrics) throw new HttpError(502, '无法获取歌词内容')
+    res.writeHead(200, {
+      'Content-Type': 'text/plain; charset=utf-8',
+      'Content-Length': Buffer.byteLength(lyrics),
+      'Cache-Control': 'public, max-age=86400',
+      'X-Content-Type-Options': 'nosniff',
+    })
+    res.end(method === 'HEAD' ? undefined : lyrics)
     return
   }
 
@@ -688,6 +814,24 @@ async function resolveLyric(cid) {
   try {
     const data = await officialSong(cid)
     return /^https:\/\//.test(data.lyricUrl) ? data.lyricUrl : null
+  } catch {
+    return null
+  }
+}
+
+const LYRIC_MAX_BYTES = 512 * 1024
+
+/** 取回 .lrc 原文；超出上限或非 2xx 返回 null（由调用方给 502/204） */
+async function fetchLyricText(source) {
+  try {
+    const response = await fetch(source, {
+      headers: { Accept: 'text/plain,*/*', 'User-Agent': 'siren-records/1.0 (+https://siren.neolx.ltd)' },
+      signal: AbortSignal.timeout(12_000),
+    })
+    if (!response.ok) return null
+    const text = await response.text()
+    if (!text) return null
+    return text.length > LYRIC_MAX_BYTES ? null : text
   } catch {
     return null
   }

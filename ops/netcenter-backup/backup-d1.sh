@@ -2,7 +2,7 @@
 # =============================================================================
 # SIREN RECORDS · 云端数据库（Cloudflare D1）定期备份
 #
-# 运行位置：NetCenter（orangepi5）/ 任意有 curl + sha256sum + python3 的 Linux
+# 运行位置：NetCenter（树莓派 pi，aarch64）/ 任意有 curl + sha256sum + python3 的 Linux
 # 触发方式：systemd user timer（siren-d1-backup.timer），也可手动执行。
 #
 # 安全要点：
@@ -22,22 +22,20 @@ umask 077
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="${SIREN_BACKUP_CONFIG:-$ROOT_DIR/backup.env}"
-DUMP_DIR="${SIREN_BACKUP_DIR:-$ROOT_DIR/dumps}"
 STATE_DIR="$ROOT_DIR/state"
 LOCK_FILE="$STATE_DIR/backup.lock"
-
-KEEP_DAILY="${SIREN_BACKUP_KEEP_DAILY:-30}"
-KEEP_MONTHLY="${SIREN_BACKUP_KEEP_MONTHLY:-12}"
-MIN_FREE_MB="${SIREN_BACKUP_MIN_FREE_MB:-1024}"
-# 备份出来的用户数低于这个下限就当作失败（防止拉到空库/错库却当成好备份轮转掉旧的）
-MIN_USERS="${SIREN_BACKUP_MIN_USERS:-1}"
 
 log() { printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*"; }
 
 die() {
   log "ERROR: $*"
   mkdir -p "$STATE_DIR"
-  printf '%s %s\n' "$(date -Is)" "$*" >>"$STATE_DIR/last-error.txt"
+  # 只留最近 50 条：无限追加会和「日志交给 journal 轮转」的约定相矛盾
+  {
+    printf '%s %s\n' "$(date -Is)" "$*"
+    tail -n 49 "$STATE_DIR/last-error.txt" 2>/dev/null || true
+  } >"$STATE_DIR/last-error.txt.tmp"
+  mv -f "$STATE_DIR/last-error.txt.tmp" "$STATE_DIR/last-error.txt"
   exit 1
 }
 
@@ -57,26 +55,37 @@ case "$config_perm" in
   *) die "配置文件权限必须为 600（当前 $config_perm）：chmod 600 $CONFIG_FILE" ;;
 esac
 
+# 不要用 `set -a`：那会把 URL/令牌导出到每个子进程的环境里（ps eww / /proc/<pid>/environ 可读），
+# 而子进程（curl/python3/zstd/gpg）根本不需要它们。
 # shellcheck disable=SC1090
-set -a
 . "$CONFIG_FILE"
-set +a
 
 : "${SIREN_BACKUP_URL:?backup.env 缺少 SIREN_BACKUP_URL}"
 : "${SIREN_BACKUP_TOKEN:?backup.env 缺少 SIREN_BACKUP_TOKEN}"
 
+# 默认值必须在 source 之后取：这些变量原来写在文件顶部，
+# 于是 backup.env 里的 SIREN_BACKUP_KEEP_* / DIR 会被静默忽略（例如 KEEP_DAILY=365 仍按 30 轮转）。
+KEEP_DAILY="${SIREN_BACKUP_KEEP_DAILY:-30}"
+KEEP_MONTHLY="${SIREN_BACKUP_KEEP_MONTHLY:-12}"
+MIN_FREE_MB="${SIREN_BACKUP_MIN_FREE_MB:-1024}"
+# 备份出来的用户数低于这个下限就当作失败（防止拉到空库/错库却当成好备份轮转掉旧的）
+MIN_USERS="${SIREN_BACKUP_MIN_USERS:-1}"
+DUMP_DIR="${SIREN_BACKUP_DIR:-$ROOT_DIR/dumps}"
+
 [[ "$SIREN_BACKUP_URL" == https://* ]] || die "备份地址必须是 https"
 (( ${#SIREN_BACKUP_TOKEN} >= 32 )) || die "备份令牌长度不足 32 字符"
 [[ "$SIREN_BACKUP_URL" != *" "* ]] || die "备份地址不能包含空格"
-# 这两个值会被写进 curl 配置文件，必须挡住能跳出引号/换行的字符（配置若被篡改也不至于变成命令注入）
-[[ "$SIREN_BACKUP_URL" != *'"'* && "$SIREN_BACKUP_URL" != *$'\n'* && "$SIREN_BACKUP_URL" != *$'\r'* ]] \
-  || die "备份地址包含非法字符（引号/换行）"
+# 这两个值会被写进 curl 配置文件，必须挡住能跳出引号/换行/转义的字符（配置若被篡改也不至于变成命令注入）
+[[ "$SIREN_BACKUP_URL" != *'"'* && "$SIREN_BACKUP_URL" != *'\'* && "$SIREN_BACKUP_URL" != *$'\n'* && "$SIREN_BACKUP_URL" != *$'\r'* ]] \
+  || die "备份地址包含非法字符（引号/反斜杠/换行）"
 [[ "$SIREN_BACKUP_TOKEN" =~ ^[A-Za-z0-9._~+/=-]+$ ]] || die "备份令牌只能包含 A-Z a-z 0-9 . _ ~ + / = -"
 
-[[ "$KEEP_DAILY" =~ ^[0-9]+$ ]] && (( KEEP_DAILY >= 1 )) || die "SIREN_BACKUP_KEEP_DAILY 必须是 >=1 的整数"
-[[ "$KEEP_MONTHLY" =~ ^[0-9]+$ ]] || die "SIREN_BACKUP_KEEP_MONTHLY 必须是非负整数"
-[[ "$MIN_FREE_MB" =~ ^[0-9]+$ ]] || die "SIREN_BACKUP_MIN_FREE_MB 必须是非负整数"
-[[ "$MIN_USERS" =~ ^[0-9]+$ ]] || die "SIREN_BACKUP_MIN_USERS 必须是非负整数"
+# 只能是非负十进制整数，且不接受前导零：`08` 在 (( )) 里是八进制，会直接算错（历史缺陷：KEEP_MONTHLY=08 删掉全部月度归档）
+num_ok() { [[ "$1" =~ ^(0|[1-9][0-9]*)$ ]]; }
+num_ok "$KEEP_DAILY" && (( KEEP_DAILY >= 1 )) || die "SIREN_BACKUP_KEEP_DAILY 必须是 >=1 的整数（不要前导零，当前 '$KEEP_DAILY'）"
+num_ok "$KEEP_MONTHLY" || die "SIREN_BACKUP_KEEP_MONTHLY 必须是非负整数（不要前导零，当前 '$KEEP_MONTHLY'）"
+num_ok "$MIN_FREE_MB" || die "SIREN_BACKUP_MIN_FREE_MB 必须是非负整数（不要前导零）"
+num_ok "$MIN_USERS" || die "SIREN_BACKUP_MIN_USERS 必须是非负整数（不要前导零）"
 
 install -d -m 700 "$DUMP_DIR" "$STATE_DIR"
 
@@ -85,16 +94,29 @@ free_mb=$(df -Pm "$DUMP_DIR" | awk 'NR==2 {print $4}')
 [[ "$free_mb" =~ ^[0-9]+$ ]] || die "无法读取磁盘余量"
 (( free_mb >= MIN_FREE_MB )) || die "磁盘可用空间不足（${free_mb}MB < ${MIN_FREE_MB}MB）"
 
-# 同一时间只允许一个实例
+# 同一时间只允许一个实例（缺 flock 就直接失败，而不是静默无锁地并发跑）
+command -v flock >/dev/null 2>&1 || die "缺少 flock（并发保护必需）：请安装 util-linux"
 exec 9>"$LOCK_FILE"
-command -v flock >/dev/null 2>&1 && { flock -n 9 || die "已有备份任务正在运行"; }
+flock -n 9 || die "已有备份任务正在运行"
 
-TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/siren-backup.XXXXXX")
-cleanup() { rm -rf -- "$TMP_DIR"; }
-trap cleanup EXIT HUP INT TERM
+# 临时文件放在备份目录同一文件系统：/tmp 在 systemd 下往往是 tmpfs（计入 MemoryMax），
+# 备份文件长大后会在压缩阶段 OOM/ENOSPC，而且 df 守卫查的是 home 而不是它。
+mkdir -p "$ROOT_DIR/tmp"
+chmod 700 "$ROOT_DIR/tmp"
+TMP_DIR=$(mktemp -d "$ROOT_DIR/tmp/run.XXXXXX")
+# 本次可能生成的产物（用于失败时清理半成品）
+OUT_PART=""
+cleanup() {
+  rm -rf -- "$TMP_DIR"
+  # 半成品压缩包绝不能被轮转当成有效备份（? 只有真的写出了 .part 才清）
+  if [[ -n "$OUT_PART" && -e "$OUT_PART" ]]; then rm -f -- "$OUT_PART"; fi
+}
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT TERM
 
 # ---------- 拉取 ----------
-log "拉取云端备份：$SIREN_BACKUP_URL"
+# 日志只记 scheme+host+path：完整 URL 一旦带上查询串/用户信息就会进 journal
+log "拉取云端备份：$(printf '%s' "$SIREN_BACKUP_URL" | sed -E 's#^(https://[^/]+).*#\1#')"
 
 CURL_CONF="$TMP_DIR/curl.conf"
 {
@@ -110,7 +132,7 @@ curl --config "$CURL_CONF" \
   --proto '=https' --tlsv1.2 --max-redirs 0 \
   --fail --silent --show-error \
   --connect-timeout 20 --max-time 300 \
-  --retry 3 --retry-delay 5 --retry-all-errors \
+  --retry 3 --retry-delay 5 \
   --dump-header "$TMP_DIR/headers" --output "$TMP_DIR/dump.sql" || curl_rc=$?
 if (( curl_rc != 0 )); then
   http_code=$(awk 'NR==1 {print $2}' "$TMP_DIR/headers" 2>/dev/null || true)
@@ -152,7 +174,9 @@ tail -n 3 "$TMP_DIR/dump.sql" | grep -q 'END OF DUMP' || die "备份缺少结束
 
 # ---------- 还原校验（内存 SQLite） ----------
 log "还原校验（integrity_check / foreign_key_check）"
-if ! restore_json=$(python3 "$ROOT_DIR/restore-check.py" --min-users "$MIN_USERS" "$TMP_DIR/dump.sql" 2>"$TMP_DIR/restore.err"); then
+# 头部声明的每表行数必须与真实还原出来的行数一致：否则「schema 齐全但数据是另一份/空表」也会通过
+if ! restore_json=$(python3 "$ROOT_DIR/restore-check.py" --min-users "$MIN_USERS" \
+  --expect-counts "$table_counts" "$TMP_DIR/dump.sql" 2>"$TMP_DIR/restore.err"); then
   die "还原校验失败：$(tr -d '\n' <"$TMP_DIR/restore.err" | head -c 400)"
 fi
 
@@ -160,35 +184,65 @@ fi
 stamp=$(date -u '+%Y%m%dT%H%M%SZ')
 base="siren-d1-$stamp"
 
+# 先写 *.part，校验通过后再 mv -n 到正式文件名：
+# 这样中途失败（ENOSPC / OOM / 超时被 SIGKILL）留下的半截文件不会被当成有效备份参与轮转。
 if [[ -n "${SIREN_BACKUP_GPG_RECIPIENT:-}" ]]; then
   command -v gpg >/dev/null 2>&1 || die "配置了 GPG 收件人但缺少 gpg"
   out="$DUMP_DIR/$base.sql.gpg"
+  OUT_PART="$out.part"
   gpg --batch --yes --quiet --trust-model always \
     --encrypt --recipient "$SIREN_BACKUP_GPG_RECIPIENT" \
-    --output "$out" "$TMP_DIR/dump.sql" || die "GPG 加密失败"
+    --output "$OUT_PART" "$TMP_DIR/dump.sql" || die "GPG 加密失败"
 elif command -v zstd >/dev/null 2>&1; then
   out="$DUMP_DIR/$base.sql.zst"
-  zstd -q --no-progress -10 -T2 -o "$out" "$TMP_DIR/dump.sql" || die "zstd 压缩失败"
+  OUT_PART="$out.part"
+  zstd -q --no-progress -10 -T2 -o "$OUT_PART" "$TMP_DIR/dump.sql" || die "zstd 压缩失败"
 else
   out="$DUMP_DIR/$base.sql.gz"
-  gzip -9 -c "$TMP_DIR/dump.sql" >"$out" || die "gzip 压缩失败"
+  OUT_PART="$out.part"
+  gzip -9 -c "$TMP_DIR/dump.sql" >"$OUT_PART" || die "gzip 压缩失败"
 fi
 
+[[ -s "$OUT_PART" ]] || die "压缩产物为空：$OUT_PART"
+chmod 600 "$OUT_PART"
+mv -n -- "$OUT_PART" "$out" || die "无法写入 $out"
+OUT_PART=""           # 已转正，cleanup 不要再动它
 chmod 600 "$out"
 out_sha=$(sha256sum "$out" | awk '{print $1}')
 printf '%s  %s\n' "$out_sha" "$(basename "$out")" >"$out.sha256"
 chmod 600 "$out.sha256"
 
-cat >"$STATE_DIR/last-success.json" <<EOF
-{"at":"$(date -Is)","file":"$(basename "$out")","sha256":"$out_sha","plain_bytes":$bytes,"tables":"$table_counts","restore":$restore_json}
-EOF
+# JSON 用 python3 生成：手工拼字符串时，X-Backup-Tables 里只要出现引号/反斜杠就会写坏文件。
+# 不用 jq：NetCenter 上实际没有装 jq（只有 python3，restore-check.py 本来就依赖它），
+# 缺 jq 时若直接 die，等于每晚备份都失败。
+python3 - "$(date -Is)" "$(basename "$out")" "$out_sha" "$table_counts" "$bytes" "$restore_json" \
+  >"$STATE_DIR/last-success.json" <<'PY'
+import json
+import sys
+
+at, name, sha, tables, plain, restore = sys.argv[1:7]
+json.dump(
+    {
+        "at": at,
+        "file": name,
+        "sha256": sha,
+        "plain_bytes": int(plain),
+        "tables": tables,
+        "restore": json.loads(restore),
+    },
+    sys.stdout,
+    ensure_ascii=False,
+)
+print()
+PY
 chmod 600 "$STATE_DIR/last-success.json"
 rm -f "$STATE_DIR/last-error.txt"
 
 # ---------- 保留策略 ----------
-# 最近 KEEP_DAILY 份全留；更早的只留每个月第一份，最多 KEEP_MONTHLY 个月。
+# 最近 KEEP_DAILY 份全留；更早的每月保留**最新**一份，最多 KEEP_MONTHLY 个月。
+# 两个参数在入口处已校验为无前导零的十进制整数，这里再做一次 10# 归一化，避免 08/09 被当八进制。
 retention() {
-  local daily=$1 monthly=$2
+  local daily=$((10#$1)) monthly=$((10#$2))
   local files=() f idx=0 base ymd ym
   local seen=()
   mapfile -t files < <(find "$DUMP_DIR" -maxdepth 1 -type f \
@@ -217,6 +271,14 @@ retention() {
   find "$DUMP_DIR" -maxdepth 1 -type f -name '*.sha256' | while read -r s; do
     [[ -f "${s%.sha256}" ]] || rm -f -- "$s"
   done
+
+  # 轮转后至少要留一份：否则配置/逻辑出问题时会把历史全部删光（曾发生过 KEEP_DAILY=0 清空事件）
+  local left
+  left=$(find "$DUMP_DIR" -maxdepth 1 -type f \
+    \( -name 'siren-d1-*.sql.zst' -o -name 'siren-d1-*.sql.gz' -o -name 'siren-d1-*.sql.gpg' \) | wc -l)
+  if (( left < 1 )); then
+    die "轮转后一个备份都不剩，已中止（检查 KEEP_DAILY/KEEP_MONTHLY 与 dumps 目录权限）"
+  fi
 }
 
 retention "$KEEP_DAILY" "$KEEP_MONTHLY"
