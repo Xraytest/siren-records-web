@@ -2328,6 +2328,87 @@ select {
   margin-left: auto;
 }
 
+/* ---------- 全屏播放视图 · 独立控制台 ---------- */
+
+.pv-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px 18px 14px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.02);
+}
+.pv-controls-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  color: var(--dim);
+  text-transform: uppercase;
+}
+.pv-controls-head span:last-child {
+  color: var(--accent);
+}
+.pv-seek-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.pv-time {
+  flex-shrink: 0;
+  min-width: 40px;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--dim);
+}
+.pv-time:last-child {
+  text-align: right;
+}
+.pv-seek {
+  position: relative;
+  flex: 1;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.08);
+}
+.pv-seek-fill {
+  height: 100%;
+  background: var(--accent);
+  box-shadow: 0 0 12px rgba(160, 237, 255, 0.5);
+}
+.pv-seek-input {
+  position: absolute;
+  inset: -8px 0 0;
+  width: 100%;
+  height: 20px;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+.pv-btnrow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.pv-btnrow .play-btn--lg {
+  margin: 0 8px;
+}
+.pv-volume {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 16px;
+}
+.pv-btnrow .playerbar-retry {
+  margin-left: 12px;
+}
+
 /* ---------- 登录门 / 空状态 ---------- */
 
 .login-gate {
@@ -3561,6 +3642,15 @@ select {
   .player-view-foot {
     padding-left: 24px;
     padding-right: 24px;
+  }
+  .pv-btnrow .pv-volume {
+    margin-left: 0;
+    order: 9;
+    width: 100%;
+    justify-content: center;
+  }
+  .pv-btnrow .pv-volume .volume {
+    width: 120px;
   }
   .account-gate-visual {
     display: none;

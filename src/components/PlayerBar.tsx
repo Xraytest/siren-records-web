@@ -12,6 +12,146 @@ import { useAuth } from '../state/AuthContext'
 import { openAuth } from '../lib/authDialog'
 import type { Song } from '../lib/types'
 
+/** 全屏播放视图内的独立控制台：与底部播放条解耦，这里展示全部控制 */
+function ViewControls() {
+  const p = usePlayer()
+  const [seeking, setSeeking] = useState<number | null>(null)
+  const displayTime = seeking ?? p.currentTime
+  // 键盘回调里读 ref：currentTime 每秒变多次，避免反复解绑重绑监听
+  const pRef = useRef(p)
+  useEffect(() => {
+    pRef.current = p
+  }, [p])
+
+  // 空格播放/暂停、←/→ 5 秒微调、↑/↓ 音量；焦点在表单控件或按钮/链接上时不拦截
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target
+      if (t instanceof HTMLElement) {
+        const tag = t.tagName
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || t.isContentEditable) return
+        if (e.code === 'Space' && (tag === 'BUTTON' || tag === 'A' || tag === 'SUMMARY')) return
+      }
+      const cur = pRef.current
+      if (e.code === 'Space') {
+        e.preventDefault()
+        cur.toggle()
+      } else if (e.key === 'ArrowLeft') {
+        e.preventDefault()
+        cur.seek(Math.max(0, cur.currentTime - 5))
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault()
+        cur.seek(Math.min(cur.duration || 0, cur.currentTime + 5))
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        cur.setVolume(Math.min(1, cur.volume + 0.05))
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        cur.setVolume(Math.max(0, cur.volume - 0.05))
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  const pct = p.duration > 0 ? (displayTime / p.duration) * 100 : 0
+
+  return (
+    <div className="pv-controls" onDoubleClick={(e) => e.stopPropagation()}>
+      <div className="pv-controls-head">
+        <span>CONTROL DECK / 播放控制</span>
+        <span>
+          TRACK {String(p.index + 1).padStart(2, '0')} / {String(p.queue.length).padStart(2, '0')}
+        </span>
+      </div>
+      <div className="pv-seek-row">
+        <span className="mono pv-time">{formatDuration(displayTime)}</span>
+        <div className="pv-seek">
+          <div className="pv-seek-fill" style={{ width: `${pct}%` }} />
+          <input
+            className="pv-seek-input"
+            type="range"
+            min={0}
+            max={p.duration || 0}
+            step={0.1}
+            value={Math.min(displayTime, p.duration || 0)}
+            aria-valuetext={formatDuration(displayTime)}
+            onChange={(e) => setSeeking(Number(e.target.value))}
+            onPointerUp={(e) => {
+              p.seek(Number((e.target as HTMLInputElement).value))
+              setSeeking(null)
+            }}
+            onKeyUp={(e) => {
+              if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+                p.seek(Number((e.target as HTMLInputElement).value))
+                setSeeking(null)
+              }
+            }}
+            aria-label="播放进度"
+          />
+        </div>
+        <span className="mono pv-time">{formatDuration(p.duration)}</span>
+      </div>
+      <div className="pv-btnrow">
+        <button
+          className={`icon-btn ${p.shuffle ? 'is-on' : ''}`}
+          onClick={p.toggleShuffle}
+          title="随机播放"
+        >
+          <IconShuffle size={18} />
+        </button>
+        <button className="icon-btn" onClick={p.prev} title="上一首（曲首 4 秒内退至前一首）">
+          <IconPrev size={20} />
+        </button>
+        <button
+          className="play-btn play-btn--lg"
+          onClick={p.toggle}
+          disabled={p.loading && !p.playing}
+          aria-label={p.playing ? '暂停' : '播放'}
+        >
+          {p.playing ? <IconPause size={22} /> : <IconPlay size={22} />}
+        </button>
+        <button className="icon-btn" onClick={p.next} title="下一首">
+          <IconNext size={20} />
+        </button>
+        <button
+          className={`icon-btn ${p.repeat !== 'off' ? 'is-on' : ''}`}
+          onClick={p.cycleRepeat}
+          title={`循环：${p.repeat === 'off' ? '关闭' : p.repeat === 'all' ? '列表循环' : '单曲循环'}`}
+          aria-label={p.repeat === 'off' ? '循环关闭' : p.repeat === 'all' ? '列表循环' : '单曲循环'}
+        >
+          {p.repeat === 'one' ? <IconRepeatOne size={18} /> : <IconRepeat size={18} />}
+        </button>
+        <span className="pv-volume">
+          <button
+            className="icon-btn"
+            onClick={() => p.setVolume(p.volume > 0 ? 0 : 0.8)}
+            title="静音"
+            aria-label={p.muted || p.volume === 0 ? '取消静音' : '静音'}
+          >
+            {p.muted || p.volume === 0 ? <IconMute size={18} /> : <IconVolume size={18} />}
+          </button>
+          <input
+            className="volume"
+            type="range"
+            min={0}
+            max={1}
+            step={0.01}
+            value={p.muted ? 0 : p.volume}
+            onChange={(e) => p.setVolume(Number(e.target.value))}
+            aria-label="音量"
+          />
+        </span>
+        {p.retrying > 0 && (
+          <button className="playerbar-retry" onClick={p.retryNow} title="点击立即重连">
+            重连 {p.retrying}/{MAX_RETRY}
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+
 export function PlayerBar() {
   const p = usePlayer()
   const { user } = useAuth()
@@ -144,6 +284,7 @@ export function PlayerBar() {
               </div>
             </div>
             <div className="player-view-panel">
+              <ViewControls />
               <div className="seg">
                 <button className={panel === 'lyrics' ? 'is-on' : ''} onClick={() => setPanel('lyrics')}>同步歌词 LRC</button>
                 <button className={panel === 'queue' ? 'is-on' : ''} onClick={() => setPanel('queue')}>播放序列 {p.queue.length}</button>
