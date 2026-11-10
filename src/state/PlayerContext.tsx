@@ -10,12 +10,14 @@ import {
 } from 'react'
 import { toast } from '../lib/toast'
 import { loadCatalog, useCatalogVersion } from '../lib/catalog'
-import { isInstrumental, useSettings } from '../lib/settings'
+import { isInstrumental, readSettings, useSettings } from '../lib/settings'
+import { audioSrcFor } from '../lib/audio-url'
 import { advanceTrack, retreatTrack, type RepeatMode } from '../lib/player-queue'
 import { STALL_MS, canRetry, retryDelay, shouldClearRetry } from '../lib/retry-policy'
 import type { LyricLine, Song } from '../lib/types'
 
 export type { RepeatMode }
+
 
 interface PlayerValue {
   queue: Song[]
@@ -282,7 +284,10 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       // 旧签名可能已过期：加时间戳让 Worker 重新 302 到新地址
       epochRef.current += 1
       loadedCidRef.current = song.cid
-      audio.src = `/api/audio/${song.cid}?r=${Date.now()}`
+      // auto 模式下第 2 次重连开始改走本站转发：官方 CDN 被限速/阻断时这是唯一还能出字节的路
+      const via = readSettings().audioVia
+      const useProxy = via === 'proxy' || (via === 'auto' && attempt >= 2)
+      audio.src = audioSrcFor(song.cid, { proxy: useProxy, bust: true })
       audio.load()
       progressAtRef.current = Date.now()
       void tryPlay()
@@ -317,7 +322,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       setLoading(true)
       pendingSeekRef.current = opts.seek && opts.seek > 0 ? opts.seek : null
       loadedCidRef.current = song.cid
-      audio.src = `/api/audio/${song.cid}`
+      audio.src = audioSrcFor(song.cid, { proxy: readSettings().audioVia === 'proxy' })
       audio.load()
       progressAtRef.current = Date.now()
       ensureAnalyser(audio)
@@ -689,7 +694,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     pendingSeekRef.current = audio.currentTime > 0 ? audio.currentTime : null
     epochRef.current += 1
     loadedCidRef.current = song.cid
-    audio.src = `/api/audio/${song.cid}?r=${Date.now()}`
+    audio.src = audioSrcFor(song.cid, { proxy: readSettings().audioVia === 'proxy', bust: true })
     audio.load()
     progressAtRef.current = Date.now()
     live.current.playing = true

@@ -9,7 +9,7 @@ function relative(iso: string | undefined) {
 }
 
 export function Settings() {
-  const { hideInstrumental, autoSyncCatalog } = useSettings()
+  const { hideInstrumental, autoSyncCatalog, audioVia } = useSettings()
   const catalog = useCatalog()
   const sync = useCatalogSync()
 
@@ -80,6 +80,47 @@ export function Settings() {
           >
             <span />
           </button>
+        </div>
+
+        <div className="setting-row">
+          <div className="setting-copy">
+            <strong>音频取流方式</strong>
+            <p>
+              官方专辑里 753/936 首是 8–50 MB 的 WAV 原文件，默认由浏览器 302 直连官方 CDN（hycdn）。
+              如果本机到 hycdn 的带宽不足，会表现为「一直转圈、播两秒就停」。
+              改成「本站转发」后浏览器只连本站边缘节点，由服务端回源取字节——两条路由哪个快取决于你的网络。
+            </p>
+            <p className="setting-meta">
+              {audioVia === 'auto'
+                ? '当前：自动（先直连，连续失败 2 次后改走本站转发）'
+                : audioVia === 'direct'
+                  ? '当前：始终直连官方 CDN'
+                  : '当前：始终走本站转发'}
+            </p>
+          </div>
+          <div className="seg seg--sm" aria-label="音频取流方式">
+            <button
+              type="button"
+              className={audioVia === 'auto' ? 'is-on' : ''}
+              onClick={() => updateSettings({ audioVia: 'auto' })}
+            >
+              自动
+            </button>
+            <button
+              type="button"
+              className={audioVia === 'direct' ? 'is-on' : ''}
+              onClick={() => updateSettings({ audioVia: 'direct' })}
+            >
+              直连
+            </button>
+            <button
+              type="button"
+              className={audioVia === 'proxy' ? 'is-on' : ''}
+              onClick={() => updateSettings({ audioVia: 'proxy' })}
+            >
+              本站转发
+            </button>
+          </div>
         </div>
 
         <div className="setting-row">

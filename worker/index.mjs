@@ -92,6 +92,41 @@ function redirect(location) {
   })
 }
 
+/* ---------- 音频转发 ---------- */
+
+// 官方 CDN 的响应头里这几个要原样带回去，否则浏览器拿不到长度/分片信息，
+// 会把 206 当成残缺文件，或者干脆退化成整段下载。
+const AUDIO_PASSTHROUGH = ['content-type', 'content-length', 'content-range', 'accept-ranges', 'etag', 'last-modified']
+
+/**
+ * 由本站边缘节点回源转发音频字节（?via=proxy）。
+ *
+ * 为什么要有这条路：官方直链在 res01.hycdn.cn，浏览器 302 过去是「客户端直连 CDN」。
+ * 国内网络到该 CDN 的带宽经常只有几十 KB/s，而专辑里 753/936 首是 8–50 MB 的 WAV，
+ * 45 MB 的曲子按 25 KB/s 要下半小时，表现就是「一直转圈 / 播两秒卡住」。
+ * 走本站转发时，浏览器只连 Cloudflare，回源那一段由边缘节点完成，通常快得多。
+ *
+ * 注意：Range 必须透传。浏览器播放时按段取字节，不透传就只能整段下载。
+ */
+async function proxyAudio(request, source) {
+  const headers = new Headers({ Accept: '*/*' })
+  const range = request.headers.get('Range')
+  if (range) headers.set('Range', range)
+  const upstream = await fetch(source, { headers, redirect: 'follow' })
+  if (!upstream.ok && upstream.status !== 206) throw new HttpError(502, `音频源返回 ${upstream.status}`)
+  const out = new Headers()
+  for (const name of AUDIO_PASSTHROUGH) {
+    const value = upstream.headers.get(name)
+    if (value) out.set(name, value)
+  }
+  if (!out.has('Accept-Ranges')) out.set('Accept-Ranges', 'bytes')
+  out.set('Cache-Control', 'public, max-age=3600')
+  out.set('X-Content-Type-Options', 'nosniff')
+  // 同源播放不需要 CORS，但直连调试（curl / 第三方播放器）时带上更省事
+  out.set('Access-Control-Allow-Origin', '*')
+  return new Response(request.method === 'HEAD' ? null : upstream.body, { status: upstream.status, headers: out })
+}
+
 /* ---------- 数据映射 ---------- */
 
 function toUser(row) {
@@ -266,17 +301,30 @@ const PROXY_WINDOW_MS = 60_000
 const PROXY_MAX_PER_WINDOW = 120
 const proxyHits = new Map()
 
-function proxyAllowed(request) {
+// 音频字节转发再单独一档：一次播放只发几次分片请求，但每次最多 50 MB。
+// 和换签名地址的 120 次/分共用一个桶就等于允许 6 GB/分的出站，所以收紧到 30 次/分。
+const AUDIO_PROXY_MAX_PER_WINDOW = 30
+const audioProxyHits = new Map()
+
+function rateAllowed(bucket, request, max) {
   const key = request.headers.get('CF-Connecting-IP') || 'unknown'
   const now = Date.now()
-  pruneHits(proxyHits, now)
-  const hit = proxyHits.get(key)
+  pruneHits(bucket, now)
+  const hit = bucket.get(key)
   if (!hit || hit.reset < now) {
-    proxyHits.set(key, { reset: now + PROXY_WINDOW_MS, n: 1 })
+    bucket.set(key, { reset: now + PROXY_WINDOW_MS, n: 1 })
     return true
   }
   hit.n += 1
-  return hit.n <= PROXY_MAX_PER_WINDOW
+  return hit.n <= max
+}
+
+function proxyAllowed(request) {
+  return rateAllowed(proxyHits, request, PROXY_MAX_PER_WINDOW)
+}
+
+function audioProxyAllowed(request) {
+  return rateAllowed(audioProxyHits, request, AUDIO_PROXY_MAX_PER_WINDOW)
 }
 
 /* ---------- 数据库导出（供 NetCenter 定期备份拉取） ---------- */
@@ -884,6 +932,11 @@ async function handleApi(request, env, ctx, url) {
     if (!proxyAllowed(request)) throw new HttpError(429, '请求过于频繁，请稍后再试')
     const source = await resolveAudio(cid)
     if (!source) throw new HttpError(502, '无法获取音频地址')
+    // 默认仍 302 到官方 CDN（省带宽）；?via=proxy 走本站边缘转发，见 proxyAudio 注释
+    if (url.searchParams.get('via') === 'proxy') {
+      if (!audioProxyAllowed(request)) throw new HttpError(429, '音频转发请求过于频繁，请稍后再试')
+      return proxyAudio(request, source)
+    }
     return redirect(source)
   }
 

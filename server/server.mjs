@@ -1,6 +1,7 @@
 import { createReadStream } from 'node:fs'
 import { mkdir, readFile, stat } from 'node:fs/promises'
 import { createServer } from 'node:http'
+import { Readable } from 'node:stream'
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 import path from 'node:path'
@@ -310,17 +311,25 @@ const PROXY_WINDOW_MS = 60_000
 const PROXY_MAX_PER_WINDOW = 120
 const proxyHits = new Map()
 
-function proxyAllowed(req) {
+// 音频字节转发单独一档（与 Worker 端一致）：一次播放只发几次分片请求，但每次最多 50 MB
+const AUDIO_PROXY_MAX_PER_WINDOW = 30
+const audioProxyHits = new Map()
+
+function rateAllowed(bucket, req, max) {
   const key = req.socket.remoteAddress || 'unknown'
   const now = Date.now()
-  pruneHits(proxyHits, now)
-  const hit = proxyHits.get(key)
+  pruneHits(bucket, now)
+  const hit = bucket.get(key)
   if (!hit || hit.reset < now) {
-    proxyHits.set(key, { reset: now + PROXY_WINDOW_MS, n: 1 })
+    bucket.set(key, { reset: now + PROXY_WINDOW_MS, n: 1 })
     return true
   }
   hit.n += 1
-  return hit.n <= PROXY_MAX_PER_WINDOW
+  return hit.n <= max
+}
+
+function audioProxyAllowed(req) {
+  return rateAllowed(audioProxyHits, req, AUDIO_PROXY_MAX_PER_WINDOW)
 }
 
 const BACKUP_TABLES = ['users', 'sessions', 'playlists']
@@ -768,6 +777,30 @@ async function handleApi(req, res, pathname) {
     if (!proxyAllowed(req)) throw new HttpError(429, '请求过于频繁，请稍后再试')
     const source = await resolveAudio(cid)
     if (!source) throw new HttpError(502, '无法获取音频地址')
+    // ?via=proxy：由本站转发音频字节（与 Worker 端同语义，用于本地验证转发链路）
+    if (new URL(req.url || '/', 'http://localhost').searchParams.get('via') === 'proxy') {
+      if (!audioProxyAllowed(req)) throw new HttpError(429, '音频转发请求过于频繁，请稍后再试')
+      const range = req.headers.range
+      const upstream = await fetch(source, { headers: range ? { Range: range } : {} })
+      if (!upstream.ok && upstream.status !== 206) throw new HttpError(502, `音频源返回 ${upstream.status}`)
+      const headers = {
+        'Cache-Control': 'public, max-age=3600',
+        'X-Content-Type-Options': 'nosniff',
+        'Access-Control-Allow-Origin': '*',
+        'Accept-Ranges': upstream.headers.get('accept-ranges') || 'bytes',
+      }
+      for (const name of ['content-type', 'content-length', 'content-range', 'etag', 'last-modified']) {
+        const value = upstream.headers.get(name)
+        if (value) headers[name] = value
+      }
+      res.writeHead(upstream.status, headers)
+      if (method === 'HEAD' || !upstream.body) {
+        res.end()
+        return
+      }
+      Readable.fromWeb(upstream.body).pipe(res)
+      return
+    }
     res.writeHead(302, { Location: source, 'Cache-Control': 'no-store' })
     res.end()
     return
