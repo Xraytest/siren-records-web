@@ -9,13 +9,6 @@ export interface Settings {
   librarySort: 'updated' | 'created' | 'name' | 'tracks'
   /** 页面在前台时自动检查曲库更新（每 5 分钟一次轻量探测） */
   autoSyncCatalog: boolean
-  /**
-   * 音频取流方式：
-   * - auto：先直连官方 CDN，连续失败后自动改走本站边缘转发
-   * - direct：始终 302 直连官方 CDN（官方 CDN 快、本站慢时选它）
-   * - proxy：始终走本站 /api/audio?via=proxy 转发（客户端连不上官方 CDN 时选它）
-   */
-  audioVia: 'auto' | 'direct' | 'proxy'
 }
 
 const KEY = 'siren:settings'
@@ -24,7 +17,6 @@ const DEFAULTS: Settings = {
   libraryView: 'grid',
   librarySort: 'updated',
   autoSyncCatalog: true,
-  audioVia: 'auto',
 }
 
 function read(): Settings {
