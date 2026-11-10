@@ -5,8 +5,9 @@ import { PlayerBar } from './PlayerBar'
 import { SearchPalette } from './SearchPalette'
 import { IconDisc, IconSearch, IconSliders, IconUser } from './Icons'
 import { useAuth } from '../state/AuthContext'
-import { useCatalog } from '../lib/catalog'
+import { useCatalog, useCatalogSync } from '../lib/catalog'
 import { useAuthDialog } from '../lib/authDialog'
+import { formatRelative } from '../lib/format'
 import { useToasts } from '../lib/toast'
 
 const NAV = [
@@ -19,10 +20,27 @@ const NAV = [
 export function Layout() {
   const { user } = useAuth()
   const catalog = useCatalog()
+  const sync = useCatalogSync()
   const { mode, close, setMode } = useAuthDialog()
   const [searchOpen, setSearchOpen] = useState(false)
   const location = useLocation()
   const toasts = useToasts()
+
+  const syncedAt = sync.meta?.syncedAt ? Date.parse(sync.meta.syncedAt) : Number.NaN
+  const syncLabel = sync.refreshing
+    ? '正在与官方同步…'
+    : sync.meta?.mode === 'snapshot'
+      ? '离线快照'
+      : Number.isFinite(syncedAt)
+        ? `与官方同步 · ${formatRelative(syncedAt)}`
+        : '曲库同步'
+  const syncTitle = [
+    sync.meta ? `版本 v${sync.meta.version} · ${sync.meta.albums} 张专辑 / ${sync.meta.songs} 首` : '曲库状态未知',
+    sync.meta?.lastError ? `上次同步失败：${sync.meta.lastError}` : '',
+    '点击立即与官方曲库对齐',
+  ]
+    .filter(Boolean)
+    .join('\n')
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -115,7 +133,16 @@ export function Layout() {
             </p>
           </div>
           <div className="footer-meta">
-            <span>ARCHIVE BUILD / {catalog ? catalog.catalog.generatedAt.slice(0, 10).replace(/-/g, '.') : '——'}</span>
+            <button
+              type="button"
+              className={`sync-pill${sync.meta?.mode === 'snapshot' ? ' is-snapshot' : ''}${sync.refreshing ? ' is-busy' : ''}`}
+              onClick={() => void sync.refresh()}
+              disabled={sync.refreshing}
+              title={syncTitle}
+            >
+              <span className="sync-dot" aria-hidden="true" />
+              <span>{syncLabel}</span>
+            </button>
             <span>ALBUMS / {catalog ? catalog.catalog.albums.length : '···'}</span>
             <span>TRACKS / {catalog ? catalog.catalog.albums.reduce((n, a) => n + a.songs.length, 0) : '···'}</span>
           </div>

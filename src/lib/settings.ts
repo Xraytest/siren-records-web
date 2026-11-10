@@ -7,10 +7,17 @@ export interface Settings {
   libraryView: 'grid' | 'list'
   /** 「我的歌单」页排序方式 */
   librarySort: 'updated' | 'created' | 'name' | 'tracks'
+  /** 页面在前台时自动检查曲库更新（每 5 分钟一次轻量探测） */
+  autoSyncCatalog: boolean
 }
 
 const KEY = 'siren:settings'
-const DEFAULTS: Settings = { hideInstrumental: false, libraryView: 'grid', librarySort: 'updated' }
+const DEFAULTS: Settings = {
+  hideInstrumental: false,
+  libraryView: 'grid',
+  librarySort: 'updated',
+  autoSyncCatalog: true,
+}
 
 function read(): Settings {
   try {
@@ -36,6 +43,11 @@ export function useSettings(): Settings {
     () => current,
     () => current,
   )
+}
+
+/** 非 React 环境（轮询、事件回调）读取当前设置 */
+export function readSettings(): Settings {
+  return current
 }
 
 export function updateSettings(patch: Partial<Settings>) {

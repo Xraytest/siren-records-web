@@ -2,6 +2,8 @@
 // 由 server/server.mjs 迁移而来：node:http + node:sqlite -> fetch + D1。
 // 接口契约与本地 Node 版保持一致，方便两端共用同一套前端。
 
+import { handleCatalog, runScheduledSync } from './catalog.mjs'
+
 const SESSION_DAYS = 30
 const OFFICIAL = 'https://monster-siren.hypergryph.com'
 const SONG_CACHE_MS = 30 * 60 * 1000
@@ -614,9 +616,14 @@ async function fetchLyricText(source) {
 
 /* ---------- 路由 ---------- */
 
-async function handleApi(request, env, url) {
+async function handleApi(request, env, ctx, url) {
   const method = request.method || 'GET'
   const parts = url.pathname.split('/').filter(Boolean) // ['api', ...]
+
+  // --- 曲库（与官方保持同步，无需登录）---
+  if (parts[1] === 'catalog') {
+    return handleCatalog(request, env, ctx, url)
+  }
 
   // --- auth ---
   if (parts[1] === 'auth') {
@@ -933,7 +940,7 @@ export default {
 
     if (url.pathname.startsWith('/api/')) {
       try {
-        return await handleApi(request, env, url)
+        return await handleApi(request, env, ctx, url)
       } catch (error) {
         if (error instanceof HttpError) return json(error.status, { error: error.message })
         console.error('[siren] 未处理错误', error)
@@ -967,5 +974,11 @@ export default {
     }
 
     return new Response('前端尚未构建', { status: 404, headers: { 'Content-Type': 'text/plain; charset=utf-8' } })
+  },
+
+  // cron（wrangler.jsonc 里 "*/10 * * * *"）：把官方最新曲库增量合进 D1。
+  // 必须用 waitUntil 包住，否则 Worker 在同步完成前就被回收。
+  async scheduled(controller, env, ctx) {
+    ctx.waitUntil(runScheduledSync(env))
   },
 }

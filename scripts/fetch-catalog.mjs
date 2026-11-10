@@ -1,11 +1,16 @@
 #!/usr/bin/env node
 /**
  * 抓取塞壬唱片公开曲库，生成静态数据快照 public/data/catalog.json
- * 用法: node scripts/fetch-catalog.mjs
+ *
+ * 线上曲库已改为运行时同步（worker/catalog.mjs + server/catalog.mjs），
+ * 这个脚本现在只负责「铺底快照 / 离线兜底 / 对齐检查」：
+ *   node scripts/fetch-catalog.mjs           重建快照
+ *   node scripts/fetch-catalog.mjs --check   只比对官方与快照，有差异时退出码 1
+ *
  * 需要代理时: MSR_PROXY=socks5h://127.0.0.1:10808 node scripts/fetch-catalog.mjs
  */
 import { execFile } from 'node:child_process';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -13,6 +18,7 @@ const HOST = 'https://monster-siren.hypergryph.com';
 const PROXY = process.env.MSR_PROXY || '';
 const OUT = resolve(dirname(fileURLToPath(import.meta.url)), '../public/data/catalog.json');
 const CONCURRENCY = Number(process.env.MSR_CONCURRENCY || 8);
+const CHECK_ONLY = process.argv.includes('--check');
 
 function get(path) {
   return new Promise((resolvePromise, reject) => {
@@ -54,7 +60,59 @@ async function mapLimit(items, limit, worker) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/** 只比对、不落盘：用于「线上曲库是否真的追平官方」的验收 */
+async function checkOnly() {
+  console.log('拉取官方专辑列表…');
+  const list = await get('/api/albums');
+  let snapshot = null;
+  try {
+    snapshot = JSON.parse(await readFile(OUT, 'utf8'));
+  } catch {
+    console.log('（本地还没有快照，无法比对）');
+    process.exitCode = 1;
+    return;
+  }
+  const local = new Map((snapshot.albums || []).map((a) => [String(a.cid), a]));
+  const official = new Map(list.map((a) => [String(a.cid), a]));
+  const added = [...official.keys()].filter((cid) => !local.has(cid));
+  const removed = [...local.keys()].filter((cid) => !official.has(cid));
+  const renamed = [...official.keys()].filter(
+    (cid) => local.has(cid) && local.get(cid).name !== official.get(cid).name,
+  );
+
+  const localSongs = (snapshot.albums || []).reduce((n, a) => n + (a.songs?.length || 0), 0);
+  console.log(
+    `快照：${local.size} 张 / ${localSongs} 首（生成于 ${snapshot.generatedAt || '未知'}）`,
+  );
+  console.log(`官方：${official.size} 张`);
+
+  for (const cid of added) {
+    let songs = '?';
+    try {
+      const detail = await get(`/api/album/${cid}/detail`);
+      songs = (detail.songs || []).length;
+    } catch {
+      /* 拿不到详情就只报名字 */
+    }
+    console.log(`  + ${cid}  ${official.get(cid).name}  (${songs} 首)`);
+  }
+  for (const cid of removed) console.log(`  - ${cid}  ${local.get(cid).name}`);
+  for (const cid of renamed) console.log(`  ~ ${cid}  ${local.get(cid).name} → ${official.get(cid).name}`);
+
+  if (!added.length && !removed.length && !renamed.length) {
+    console.log('✓ 快照与官方一致');
+    return;
+  }
+  console.log(`差异：新增 ${added.length} / 下架 ${removed.length} / 改名 ${renamed.length}`);
+  console.log('（线上由运行时同步自行追平，这里只检查静态兜底快照是否需要重建）');
+  process.exitCode = 1;
+}
+
 async function main() {
+  if (CHECK_ONLY) {
+    await checkOnly();
+    return;
+  }
   console.log('拉取专辑列表…');
   const list = await get('/api/albums');
   console.log(`共 ${list.length} 张专辑`);
@@ -64,7 +122,7 @@ async function main() {
     for (let attempt = 0; attempt < 3 && !detail; attempt++) {
       try {
         detail = await get(`/api/album/${album.cid}/detail`);
-      } catch (e) {
+      } catch {
         await sleep(800);
       }
     }

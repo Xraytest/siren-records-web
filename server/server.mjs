@@ -5,6 +5,8 @@ import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypt
 import { DatabaseSync } from 'node:sqlite'
 import path from 'node:path'
 
+import { bindCatalogDb, handleCatalog, runSyncOnce, startCatalogScheduler } from './catalog.mjs'
+
 const PORT = Number(process.env.PORT || 8090)
 const DATA_DIR = path.resolve(process.env.DATA_DIR || 'data')
 const DIST_DIR = path.resolve(process.env.DIST_DIR || 'dist')
@@ -55,6 +57,19 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS sessions_expires ON sessions(expiresAt);
   CREATE INDEX IF NOT EXISTS sessions_user ON sessions(userId);
 `)
+
+// 曲库表：与线上 D1 的 migrations/0003_catalog.sql 保持一致
+bindCatalogDb(db)
+
+// `node server/server.mjs --sync-catalog`：只跑一轮曲库同步，不监听端口。
+// 部署前自检、排查「线上为什么还没新专辑」都用它。
+if (process.argv.includes('--sync-catalog')) {
+  const result = await runSyncOnce({ reason: 'cli' })
+  console.log(JSON.stringify(result, null, 2))
+  db.close()
+  // 抢不到租约 / 被间隔挡下都不算「跑过一轮」，退出码要能让人和脚本看出区别
+  process.exit(result.ok && !result.skipped ? 0 : 1)
+}
 
 /* ---------- helpers ---------- */
 
@@ -487,6 +502,11 @@ function feedItems() {
 async function handleApi(req, res, pathname) {
   const method = req.method || 'GET'
   const parts = pathname.split('/').filter(Boolean) // ['api', ...]
+
+  // --- 曲库（与官方保持同步，无需登录）---
+  if (parts[1] === 'catalog') {
+    return handleCatalog(req, res, pathname)
+  }
 
   // --- auth ---
   if (parts[1] === 'auth') {
@@ -942,6 +962,9 @@ const HOST = process.env.HOST || '127.0.0.1'
 server.listen(PORT, HOST, () => {
   console.log(`[siren] http://${HOST}:${PORT}  dist=${DIST_DIR} data=${DATA_DIR}`)
 })
+
+// 本地开发同样保持「与官方最新同步」：启动 5 秒后同步一次，之后每 10 分钟一次
+startCatalogScheduler()
 
 // 过期会话行只增不减会让 sessions 无限膨胀，定时清扫。
 const cleanup = setInterval(() => {

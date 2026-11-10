@@ -9,7 +9,7 @@ import {
   type ReactNode,
 } from 'react'
 import { toast } from '../lib/toast'
-import { loadCatalog } from '../lib/catalog'
+import { loadCatalog, useCatalogVersion } from '../lib/catalog'
 import { isInstrumental, useSettings } from '../lib/settings'
 import { advanceTrack, retreatTrack, type RepeatMode } from '../lib/player-queue'
 import { STALL_MS, canRetry, retryDelay, shouldClearRetry } from '../lib/retry-policy'
@@ -423,16 +423,20 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (restoredRef.current || !initialPlayer) return
     restoredRef.current = true
-    void loadCatalog().then((c) => {
-      const songs = initialPlayer.cids
-        .map((cid) => c.songs.get(cid))
-        .filter((s): s is Song => Boolean(s))
-        .filter((s) => !hideInstrumental || !isInstrumental(s.name))
-      if (!songs.length) return
-      hadQueueRef.current = true
-      const pos = Math.min(Math.max(initialPlayer.index, 0), songs.length - 1)
-      startAt(songs, pos, { autoplay: false, seek: initialPlayer.time, label: initialPlayer.label })
-    })
+    void loadCatalog()
+      .then((c) => {
+        const songs = initialPlayer.cids
+          .map((cid) => c.songs.get(cid))
+          .filter((s): s is Song => Boolean(s))
+          .filter((s) => !hideInstrumental || !isInstrumental(s.name))
+        if (!songs.length) return
+        hadQueueRef.current = true
+        const pos = Math.min(Math.max(initialPlayer.index, 0), songs.length - 1)
+        startAt(songs, pos, { autoplay: false, seek: initialPlayer.time, label: initialPlayer.label })
+      })
+      .catch(() => {
+        // 曲库载入失败（离线 / 后端挂了）时放弃还原队列，不要抛未处理的 rejection
+      })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -820,17 +824,23 @@ export function usePlayer() {
 export function useSongs(cids: string[]): Song[] {
   const [songs, setSongs] = useState<Song[]>([])
   const { hideInstrumental } = useSettings()
+  // 曲库热更新后（新专辑入库）也要重算：只依赖 cids 会一直显示旧封面/旧歌名
+  const version = useCatalogVersion()
   const key = cids.join(',')
   useEffect(() => {
     let alive = true
-    loadCatalog().then((c) => {
-      if (!alive) return
-      const list = key ? key.split(',').map((cid) => c.songs.get(cid)).filter((s): s is Song => Boolean(s)) : []
-      setSongs(hideInstrumental ? list.filter((s) => !isInstrumental(s.name)) : list)
-    })
+    loadCatalog()
+      .then((c) => {
+        if (!alive) return
+        const list = key ? key.split(',').map((cid) => c.songs.get(cid)).filter((s): s is Song => Boolean(s)) : []
+        setSongs(hideInstrumental ? list.filter((s) => !isInstrumental(s.name)) : list)
+      })
+      .catch(() => {
+        /* 曲库不可用时保持空列表，不影响播放器其余功能 */
+      })
     return () => {
       alive = false
     }
-  }, [key, hideInstrumental])
+  }, [key, hideInstrumental, version])
   return songs
 }

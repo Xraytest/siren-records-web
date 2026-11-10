@@ -6,7 +6,7 @@
 
 ## 功能
 
-- **曲库档案**：298 张专辑、911 首曲目，支持检索、排序、网格 / 列表视图、随机播放。
+- **曲库档案**：运行时与官方同步（当前 304 张专辑、936 首曲目），支持检索、排序、网格 / 列表视图、随机播放。新专辑上架后无需重新部署即可自动出现在曲库，见「[曲库同步](#曲库同步与官方保持最新)」。
 - **播放器**：队列、随机、循环（关闭 / 列表 / 单曲，含单曲队列原地重播，列表循环在队尾回到第一首）、进度与音量、频谱可视化、LRC 歌词逐行同步（经同源代理，不依赖第三方域 CORS）、Media Session；**音频加载失败自动重连**（换新签名地址、从断点续播，最多 4 次；只有连续稳定播放 10 秒后才归还预算，避免「一出声就归零」的无限重连；播放条上可点「重连 n/4」立即重试）。
 - **歌单**：创建、重命名、描述与标签、加入曲目（单曲 / 整张专辑）、曲目增删与上下排序；「我的歌单」页支持网格 / 列表视图与四种排序（最近更新 / 创建时间 / 名称 / 曲目数），偏好本机记忆；歌单详情页可切换「自定义 / 名称 / 专辑 / 演唱者」排列（只有自定义模式显示上下移动按钮）。
 - **歌单流转**：单张/全部歌单导出为 JSON 便携档案（可离线备份、跨设备互传），导入时自动解析并还原轨序；也可生成只读快照链接与分享码，免登录即可试听并转存。
@@ -107,17 +107,63 @@ npx wrangler secret put BACKUP_TOKEN --name siren-records-web
 # 再把同一串令牌写入 NetCenter 的 ~/siren-backup/backup.env（chmod 600）
 ```
 
-## 曲库快照
+## 曲库同步（与官方保持最新）
 
-`public/data/catalog.json` 是构建时抓取的静态快照，前端直接读取，避免线上 API 的跨域限制。
+曲库不是构建时快照，而是**运行时增量同步**的结果：后端定期把官方 `/api/albums` 与本地库对比，新专辑抓详情入库、老专辑轮流复查，前端只拉几百字节的元信息判断版本，变了才重拉全量。所以官方发新专辑后**不需要重新部署**，线上最多滞后一个同步周期。
 
-重新抓取（网络需要能访问官方 API，可选代理）：
+### 数据怎么存
+
+- 每张专辑一行：`catalog_albums(cid, payload, songCount, updatedAt)`，`payload` 就是最终下发给前端的专辑 JSON；元信息在 `catalog_meta(key, value)`（版本号、顺序、同步时间、错误）。
+- 下发时按 `order`（官方最新在前）把各行 payload 原样拼成 `{"generatedAt","source","schema","version","syncedAt","lastCheckAt","albums":[…]}`，和旧快照结构兼容，老前端不受影响。
+- 空库时先用 `public/data/catalog.json` 铺底：官方全量详情要 300+ 次请求，一轮抓不完，不铺底首次上线会有几小时只能看到十几张专辑。
+- `migrations/0003_catalog.sql` 建这两张表，**纯新增、不碰用户数据**，`npm run db:migrate` 应用。
+
+### 一轮同步做什么
+
+1. 拉官方专辑列表（一次性全量，最新在前），与本地 `cid` 集合比对。
+2. **新增**：抓专辑详情 + 新歌直链（单轮上限 `DETAIL_BUDGET=12` 张 / `SONG_BUDGET=24` 首，抓不完的留到下一轮，返回里的 `addedPending` 就是积压数）。**抓到一张就落库一张**，一轮被超时打断也不会白丢。
+3. **复查**：`known ∩ official` 里最久没更新的 `REFRESH_BUDGET=4` 张重新抓详情（官方确实会在发布后补曲目/改信息）。
+4. **下架**：先判抖动——缺失数量要 ≤ `max(3, 已知×25%)` 且官方总数没跌破本地 75%；过了这关也**不立刻删**，而是把缺失集合记到 `catalog_meta.pendingRemoval`，**下一轮再确认是同一批**（且 ≤ `MAX_REMOVALS_PER_RUN=10` 张）才真删。官方列表偶尔会短暂少几张，两轮确认能挡住这种抖动，也不会因为一次接口抽风把曲库删空。
+5. 只有内容真变了才抬 `version`（前端据此判断要不要重拉），失败写 `lastError` / `lastErrorAt`；单张专辑失败不拖垮整轮，但会记 `lastWarning` 并在返回里标 `partial: true`（前端提示「部分专辑暂未更新」，不会谎报「已是最新」）。
+
+### 谁在触发
+
+| 运行时 | 定时 | 请求时 | 手动 |
+| --- | --- | --- | --- |
+| Cloudflare Worker | `wrangler.jsonc` 的 `triggers.crons` = `*/10 * * * *`（10 分钟） | `/api/catalog` 发现数据超过 20 分钟没查，`ctx.waitUntil` 里补一次 | `POST /api/catalog/sync` |
+| 本地 Node | `setInterval` 10 分钟（启动 5 秒后先踢一次） | 同上（60 秒节流） | 同上 |
+
+并发安全：同步前先抢 `catalog_meta.leaseUntil` 租约（条件 UPDATE，3 分钟 TTL），抢不到就直接返回 `{skipped:"busy"}`，多实例 / 多 isolate 同时触发也只会有一份在跑。租约值写成 `"<到期毫秒>|<本轮 token>"`，长轮次每 30 秒续租一次，续不上就中止；释放时按 token 只清自己的租约——慢轮次收尾不会把别人刚抢到的租约删掉。
+
+防打穿：一轮开始时就把 `lastCheckAt` 落库（`skipped:"fresh"` 的间隔是 **60 秒**，`reason:"cli"` 例外），而且这个判断走的是「只读两行 meta」的轻量查询，**在被间隔挡下时不扫专辑表**；`POST /api/catalog/sync` 只接受同源请求。
+
+### 接口
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET/HEAD | `/api/catalog` | 全量曲库；`ETag: "cat-<版本>-<张数>-<曲数>"` + `Cache-Control: no-cache`，带 `If-None-Match` 命中返回 304（弱比较、支持列表与 `*`）；`X-Catalog-Mode: live\|snapshot` 表明数据来源 |
+| GET/HEAD | `/api/catalog/meta` | 几百字节：`mode / stale / version / albums / songs / syncedAt / lastCheckAt / lastError / lastWarning / pendingRemoval` |
+| POST | `/api/catalog/sync` | 立刻同步一次；15 秒冷却（429）、60 秒内已同步过会直接返回 `skipped:"fresh"` 不打官方接口；非同步接口返回 405，跨源请求 403 |
+
+### 前端行为
+
+- `src/lib/catalog.ts` 是模块级 store（`useSyncExternalStore`）：启动拉一次，之后每 5 分钟探一次 `/api/catalog/meta`，切回标签页、网络恢复也会探；版本变了才重拉全量并弹差异提示（`曲库已同步 · 新增 2 张专辑 · +9 首`）。
+- 快照模式下不比对版本号（后端没有可用数据库，曲库不会在运行期变化），只更新元信息，不会每 5 分钟白拉一次 484 KB。
+- 页脚显示真实同步状态（`与官方同步 · 3 分钟前`），点它等于「立即同步」；设置页有自动同步开关、版本与统计、手动同步按钮。两个入口共享同一个请求与 `refreshing` 状态，连点不会重复触发。
+- 手动同步会如实区分「已是最新 / 部分专辑暂未更新 / 官方接口刚查过，请稍后再试 / 同步失败」，不会把限流说成成功。
+- 后端不可用 / 纯静态托管时自动回落到静态快照，页脚显示「离线快照」，界面不会空。
+
+### 运维命令
 
 ```bash
-node scripts/fetch-catalog.mjs
-# 或
-MSR_PROXY=socks5h://127.0.0.1:10808 node scripts/fetch-catalog.mjs
+npm run catalog:sync       # 立刻同步一轮并打印统计（--sync-catalog）；被租约或 60 秒间隔挡下时退出码 1
+npm run catalog:snapshot   # 把本地库导出成 public/data/catalog.json（首启铺底 / 离线兜底），导出后需 npm run build
+npm run catalog:check      # 只读：对比静态快照与官方列表，有漂移退出码 1（用于发现「快照太久没刷新」）
 ```
+
+`scripts/fetch-catalog.mjs` 仍保留「从零全量抓取」的能力（`node scripts/fetch-catalog.mjs`），但现在只在需要重建快照或官方接口大改时才用；日常靠运行时同步。
+
+> 音频直链（`sourceUrl`）是 3 小时签名的临时地址，曲库里只把它当「这首歌有音频」的标记；真正播放走 `/api/audio/:cid`（30 分钟缓存）按需换新签名，所以曲库同步不需要为过期直链操心。
 
 ## 自建部署
 

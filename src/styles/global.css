@@ -3315,6 +3315,56 @@ select {
   letter-spacing: 0.16em;
   color: var(--dim);
 }
+
+/* 曲库同步状态：页脚常驻，可点击立即同步 */
+.sync-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  align-self: flex-start;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 0.16s ease;
+}
+.sync-pill:hover:not(:disabled) {
+  color: var(--accent);
+}
+.sync-pill:disabled {
+  cursor: progress;
+}
+.sync-pill.is-snapshot {
+  color: var(--dim);
+}
+.sync-dot {
+  width: 5px;
+  height: 5px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: syncPulse 3.2s ease-in-out infinite;
+}
+.sync-pill.is-snapshot .sync-dot {
+  background: var(--dim);
+  animation: none;
+}
+.sync-pill.is-busy .sync-dot {
+  animation: syncPulse 0.9s linear infinite;
+}
+@keyframes syncPulse {
+  0%,
+  100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 1;
+  }
+}
 .footer-links {
   display: flex;
   flex-direction: column;
@@ -3401,6 +3451,13 @@ select {
   color: var(--muted);
   font-size: 12.5px;
   line-height: 1.85;
+}
+.setting-copy .setting-meta {
+  margin-top: 10px;
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  color: var(--dim);
+  word-break: break-word;
 }
 .switch {
   position: relative;

@@ -14,7 +14,8 @@ export function SearchPalette({ open, onClose }: { open: boolean; onClose: () =>
   const { playQueue } = usePlayer()
   const navigate = useNavigate()
 
-  const result = useMemo(() => searchAll(query, hideInstrumental), [query, catalog, hideInstrumental])
+  // 把 catalog 当依赖：曲库更新后 catalog 是新的对象，检索结果才会跟着重算
+  const result = useMemo(() => searchAll(query, hideInstrumental, catalog), [query, catalog, hideInstrumental])
   const rows = useMemo(
     () => [
       ...result.albums.map((a) => ({ kind: 'album' as const, key: a.cid, title: a.name, sub: a.artistes.join(' / ') })),

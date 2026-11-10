@@ -16,6 +16,11 @@
   "observability": {
     "enabled": true
   },
+  // 曲库与官方保持最新：每 10 分钟跑一次 scheduled 增量同步（cron 用 UTC，*/10 与时区无关）。
+  // 首次同步会用 dist/data/catalog.json 铺底，之后只抓新增/复查的专辑。
+  "triggers": {
+    "crons": ["*/10 * * * *"]
+  },
   // Custom domain: workers.dev is SNI-blocked on some networks, so the app is
   // served from siren.neolx.ltd. workers.dev stays enabled for overseas access
   // and for old links.

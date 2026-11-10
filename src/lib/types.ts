@@ -35,6 +35,12 @@ export interface Catalog {
   generatedAt: string
   source: string
   albums: Album[]
+  /** 运行时同步：内容版本号，只增不减 */
+  version?: number
+  /** 最后一次成功与官方对齐的时间 */
+  syncedAt?: string
+  /** 最后一次检查官方的时间（含失败） */
+  lastCheckAt?: string
 }
 
 export interface User {
