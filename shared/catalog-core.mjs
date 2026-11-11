@@ -95,9 +95,16 @@ export async function fetchOfficialJson(path, options = {}) {
       const response = await fetchImpl(`${OFFICIAL}${path}`, {
         headers: { Accept: 'application/json', 'User-Agent': USER_AGENT },
         signal: AbortSignal.timeout(timeoutMs),
-        // 官方接口不该有重定向：被 3xx 导去别处时直接当失败，不跟进
-        redirect: 'error',
+        // 官方接口不该有重定向：被 3xx 导去别处时直接当失败，不跟进。
+        // 注意 Workers 的 fetch 不支持 redirect:'error'（会直接抛 TypeError），
+        // 边缘环境统一用 'manual' + 下面显式判定，Node 侧行为一致。
+        redirect: 'manual',
       })
+      if (response.type === 'opaqueredirect' || (response.status >= 300 && response.status < 400)) {
+        const error = new Error(`${path} 出现意外重定向（HTTP ${response.status}）`)
+        error.retryable = false
+        throw error
+      }
       if (!response.ok) {
         const error = new Error(`${path} HTTP ${response.status}`)
         error.retryable =

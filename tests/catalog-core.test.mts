@@ -284,6 +284,29 @@ test('fetchOfficialJson：code 非 0 视为失败', async () => {
   )
 })
 
+test('fetchOfficialJson：官方接口 3xx 直接失败，不跟进也不重试', async () => {
+  let calls = 0
+  let seenRedirect: unknown
+  await assert.rejects(
+    fetchOfficialJson('/api/albums', {
+      attempts: 3,
+      retryDelayMs: 1,
+      fetchImpl: async (_url: string, init: any) => {
+        calls += 1
+        seenRedirect = init?.redirect
+        return new Response(null, {
+          status: 302,
+          headers: { location: 'https://example.invalid/' },
+        })
+      },
+    }),
+    /重定向/,
+  )
+  assert.equal(calls, 1)
+  // Workers 的 fetch 不接受 'error'（会抛 TypeError 让整轮同步失败），必须用 'manual'
+  assert.equal(seenRedirect, 'manual')
+})
+
 /* ---------- seedFromBaseline ---------- */
 
 test('seedFromBaseline：铺底写入专辑与元信息', async () => {
