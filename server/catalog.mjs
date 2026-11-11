@@ -417,39 +417,51 @@ async function metaPayload() {
 async function sendCatalog(req, res) {
   if (!state.db) {
     const snapshot = await snapshotPayload()
-    sendCatalogBody(req, res, snapshot.text, `"snap-${snapshot.meta.version}"`, snapshot.meta)
+    sendCatalogBody(req, res, snapshot.text, `"snap-${snapshot.meta.version}-${snapshot.meta.albums}-${snapshot.meta.songs}"`, snapshot.meta)
     return
   }
-  const meta = readMeta(state.db)
-  if (!meta.version && !meta.order) {
-    const snapshot = await snapshotPayload()
-    sendCatalogBody(req, res, snapshot.text, `"snap-${snapshot.meta.version}"`, snapshot.meta)
-    return
+  // DB 读段（meta / 行数据）任何一步抛错都退回静态快照，与 worker readCatalog 的
+  // catch → snapshotResponse 同规：库坏了最多降级，不能让整条接口 500
+  try {
+    const meta = readMeta(state.db)
+    if (!meta.version && !meta.order) {
+      const snapshot = await snapshotPayload()
+      sendCatalogBody(req, res, snapshot.text, `"snap-${snapshot.meta.version}-${snapshot.meta.albums}-${snapshot.meta.songs}"`, snapshot.meta)
+      return
+    }
+    const etag = `"cat-${meta.version || 0}-${meta.albums || 0}-${meta.songs || 0}"`
+    if (bodyCache && bodyCache.etag === etag && Date.now() - bodyCache.at < 60_000) {
+      // 用缓存里那份 meta 生成响应头：否则「内容没变、只有时间戳变了」的一轮同步之后，
+      // 同一份 body 会配上一个更新的 X-Catalog-Synced-At，与 body 里的时间自相矛盾。
+      sendCatalogBody(req, res, bodyCache.body, etag, bodyCache.meta)
+      return
+    }
+    const rows = state.db.prepare('SELECT cid, payload FROM catalog_albums').all()
+    if (!rows.length) {
+      const snapshot = await snapshotPayload()
+      sendCatalogBody(req, res, snapshot.text, `"snap-${snapshot.meta.version}-${snapshot.meta.albums}-${snapshot.meta.songs}"`, snapshot.meta)
+      return
+    }
+    const body = buildCatalogBody({
+      generatedAt: meta.generatedAt,
+      source: meta.source || OFFICIAL,
+      version: meta.version,
+      syncedAt: meta.syncedAt,
+      lastCheckAt: meta.lastCheckAt,
+      albums: rows,
+      order: parseOrder(meta.order),
+    })
+    bodyCache = { etag, body, meta, at: Date.now() }
+    sendCatalogBody(req, res, body, etag, meta)
+  } catch (error) {
+    console.error('[siren] 曲库读取失败，退回静态快照', error)
+    const snapshot = await snapshotPayload().catch(() => null)
+    if (!snapshot) {
+      sendJson(res, 500, { error: '曲库服务异常' })
+      return
+    }
+    sendCatalogBody(req, res, snapshot.text, `"snap-${snapshot.meta.version}-${snapshot.meta.albums}-${snapshot.meta.songs}"`, snapshot.meta)
   }
-  const etag = `"cat-${meta.version || 0}-${meta.albums || 0}-${meta.songs || 0}"`
-  if (bodyCache && bodyCache.etag === etag && Date.now() - bodyCache.at < 60_000) {
-    // 用缓存里那份 meta 生成响应头：否则「内容没变、只有时间戳变了」的一轮同步之后，
-    // 同一份 body 会配上一个更新的 X-Catalog-Synced-At，与 body 里的时间自相矛盾。
-    sendCatalogBody(req, res, bodyCache.body, etag, bodyCache.meta)
-    return
-  }
-  const rows = state.db.prepare('SELECT cid, payload FROM catalog_albums').all()
-  if (!rows.length) {
-    const snapshot = await snapshotPayload()
-    sendCatalogBody(req, res, snapshot.text, `"snap-${snapshot.meta.version}"`, snapshot.meta)
-    return
-  }
-  const body = buildCatalogBody({
-    generatedAt: meta.generatedAt,
-    source: meta.source || OFFICIAL,
-    version: meta.version,
-    syncedAt: meta.syncedAt,
-    lastCheckAt: meta.lastCheckAt,
-    albums: rows,
-    order: parseOrder(meta.order),
-  })
-  bodyCache = { etag, body, meta, at: Date.now() }
-  sendCatalogBody(req, res, body, etag, meta)
 }
 
 /* ---------- 路由 ---------- */
@@ -477,14 +489,35 @@ export async function handleCatalog(req, res, pathname) {
         sendJson(res, 405, { error: '只接受 POST' }, { Allow: 'POST' })
         return
       }
+      // 只接受同源触发：第三方页面即使能发 no-cors POST，也不该能驱动我们打官方接口
+      // （与 worker/catalog.mjs 同分支的逻辑保持逐行一致，两端行为不许分叉）
+      const origin = req.headers.origin || ''
+      if (origin) {
+        let originHost = ''
+        try {
+          originHost = new URL(origin).host
+        } catch {
+          originHost = ''
+        }
+        if (originHost && originHost !== req.headers.host) {
+          sendJson(res, 403, { error: '只接受同源请求' })
+          return
+        }
+      }
       const now = Date.now()
       if (now - lastManualAt < MANUAL_COOLDOWN_MS) {
         sendJson(res, 429, { error: '同步过于频繁，请稍后再试' })
         return
       }
       lastManualAt = now
-      const result = await runSyncOnce({ reason: 'manual' })
-      sendJson(res, result.ok ? 200 : 502, result)
+      // 先响应后执行：与 worker/catalog.mjs 同分支保持同形（202 + started:true），
+      // 手动同步动辄几十秒，同步等待会让前端 30 秒超时直接报错，而同步本身还在后台继续
+      sendJson(res, 202, { started: true, reason: 'manual', checkedAt: new Date().toISOString() })
+      void runSyncOnce({ reason: 'manual' }).then((result) => {
+        if (result && !result.ok) console.error('[siren] 曲库手动同步失败', result.error)
+        else if (result?.warnings?.length) console.warn('[siren] 曲库手动同步部分失败', result.warnings.slice(0, 3))
+        else console.log(`[siren] 曲库手动同步完成 v${result?.version}（+${result?.added} 专辑）`)
+      })
       return
     }
     sendJson(res, 404, { error: '接口不存在' })

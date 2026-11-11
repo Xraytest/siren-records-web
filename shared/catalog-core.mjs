@@ -39,6 +39,41 @@ export const USER_AGENT = 'siren-records/1.0 (+https://siren.neolx.ltd)'
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
+/** 官方 JSON 都是 KB 级；超过这个上限的响应一律当攻击/异常处理，避免被诱导读入超大 body */
+const MAX_RESPONSE_BYTES = 5 * 1024 * 1024
+
+/** 限量读 body：content-length 预检 + 流式累计上限，替代裸 response.json() */
+async function readLimitedJson(response, path) {
+  const declared = Number(response.headers.get('content-length'))
+  if (Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES) {
+    const error = new Error(`${path} 响应超过 ${MAX_RESPONSE_BYTES} 字节上限`)
+    error.retryable = false
+    throw error
+  }
+  const reader = response.body?.getReader?.()
+  if (!reader) return response.json()
+  const chunks = []
+  let received = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    received += value.byteLength
+    if (received > MAX_RESPONSE_BYTES) {
+      const error = new Error(`${path} 响应超过 ${MAX_RESPONSE_BYTES} 字节上限`)
+      error.retryable = false
+      throw error
+    }
+    chunks.push(value)
+  }
+  const merged = new Uint8Array(received)
+  let offset = 0
+  for (const chunk of chunks) {
+    merged.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return JSON.parse(new TextDecoder().decode(merged))
+}
+
 /**
  * 官方 JSON 接口：统一处理 {code:0,data} 信封、超时与重试。
  * 注意官方 404 也是 HTTP 200 + code 104，所以必须看 body.code 而不是 res.ok。
@@ -60,6 +95,8 @@ export async function fetchOfficialJson(path, options = {}) {
       const response = await fetchImpl(`${OFFICIAL}${path}`, {
         headers: { Accept: 'application/json', 'User-Agent': USER_AGENT },
         signal: AbortSignal.timeout(timeoutMs),
+        // 官方接口不该有重定向：被 3xx 导去别处时直接当失败，不跟进
+        redirect: 'error',
       })
       if (!response.ok) {
         const error = new Error(`${path} HTTP ${response.status}`)
@@ -73,7 +110,14 @@ export async function fetchOfficialJson(path, options = {}) {
         }
         throw error
       }
-      const body = await response.json()
+      // Content-Type 宽松校验：缺失时放行（兼容本仓库测试替身），声明了就必须是 JSON
+      const contentType = String(response.headers.get('content-type') || '')
+      if (contentType && !contentType.toLowerCase().includes('json')) {
+        const error = new Error(`${path} 响应不是 JSON（Content-Type: ${contentType}）`)
+        error.retryable = false
+        throw error
+      }
+      const body = await readLimitedJson(response, path)
       if (body?.code === 104) {
         const error = new Error(`${path} 不存在（code 104）`)
         error.notFound = true
@@ -153,7 +197,8 @@ export function buildAlbum(detail, previous = null, songInfo = new Map(), listEn
     return {
       cid: songCid,
       name: String(song.name || prev?.name || ''),
-      artistes: joinArtistes(info?.artists || song.artistes || prev?.artistes),
+      // 空数组也是 truthy：官方偶尔在单曲信息里回空 artists，不能让它把上一版继承来的名单抹掉
+      artistes: joinArtistes(info?.artists?.length ? info.artists : song.artistes?.length ? song.artistes : prev?.artistes),
       albumCid: cid,
       albumName: String(detail.name || previous?.name || ''),
       albumCover: coverUrl,
@@ -428,6 +473,9 @@ export async function syncCatalog({
       const info = new Map()
       let failed = 0
       for (const cid of needed) {
+        // 长轮次逐首续租：续租失败从这里直接向上抛（不进单曲 try），上层凭 leaseLost 中止整轮，
+        // 否则被接管的这轮还会继续往库里写，与接管方互相覆盖
+        await keepLease()
         try {
           info.set(cid, await fetchSongInfo(fetchImpl, cid, httpOptions))
         } catch {

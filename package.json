@@ -8,7 +8,7 @@
     "dev:cf": "wrangler dev",
     "server": "node server/server.mjs",
     "build": "tsc -b && vite build",
-    "test": "node --test \"tests/*.test.mts\"",
+    "test": "node --test \"tests/**/*.test.mts\"",
     "deploy": "npm run build && wrangler deploy",
     "deploy:safe": "node scripts/deploy-safe.mjs",
     "catalog:check": "node scripts/fetch-catalog.mjs --check",

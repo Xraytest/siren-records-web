@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useMemo, useSyncExternalStore } from 'react'
-import { describeDiff, diffSummary, normalizeVersion, type CatalogDiff } from './catalog-diff'
+import { describeDiff, diffSummary, type CatalogDiff } from './catalog-diff'
+import {
+  catalogModeFromHeader,
+  decideUpdate,
+  metaFromCatalog,
+  noteForSyncResponse,
+  type CatalogMeta,
+} from './catalog-meta'
 import { isInstrumental, readSettings, useSettings } from './settings'
 import { toast } from './toast'
 import type { Album, Catalog, Song } from './types'
@@ -13,23 +20,7 @@ import type { Album, Catalog, Song } from './types'
  * 后端不可用（例如纯静态托管）时自动退回 data/catalog.json，播放不受影响。
  */
 
-export interface CatalogMeta {
-  version: number
-  generatedAt: string
-  syncedAt: string
-  lastCheckAt: string
-  albums: number
-  songs: number
-  mode: 'live' | 'snapshot'
-  stale: boolean
-  source: string
-  lastError: string
-  lastWarning?: string
-  lastWarningAt?: string
-  pendingRemoval?: number
-  lastRemoved?: number
-  lastReason?: string
-}
+export type { CatalogMeta } from './catalog-meta'
 
 export type Built = { catalog: Catalog; albums: Map<string, Album>; songs: Map<string, Song>; all: Song[] }
 export type CatalogStatus = 'idle' | 'loading' | 'ready' | 'error'
@@ -130,22 +121,6 @@ function normalizeCatalog(data: unknown): Catalog | null {
   return catalog
 }
 
-function metaFromCatalog(catalog: Catalog, mode: 'live' | 'snapshot'): CatalogMeta {
-  const songs = catalog.albums.reduce((total, album) => total + (album.songs?.length || 0), 0)
-  return {
-    version: normalizeVersion(catalog.version),
-    generatedAt: catalog.generatedAt || '',
-    syncedAt: catalog.syncedAt || catalog.generatedAt || '',
-    lastCheckAt: catalog.lastCheckAt || catalog.syncedAt || catalog.generatedAt || '',
-    albums: catalog.albums.length,
-    songs,
-    mode,
-    stale: mode === 'snapshot',
-    source: catalog.source || '',
-    lastError: '',
-  }
-}
-
 async function fetchLive(): Promise<{ catalog: Catalog; meta: CatalogMeta }> {
   const response = await fetch('/api/catalog', {
     cache: 'no-store',
@@ -157,11 +132,8 @@ async function fetchLive(): Promise<{ catalog: Catalog; meta: CatalogMeta }> {
   if (!catalog) throw new Error('曲库接口数据异常')
   // 后端在「还没铺底 / D1 不可用」时会把静态快照当曲库返回，并用响应头说明真实模式。
   // 不看头的话前端永远以为自己在 live 模式，快照模式下每 5 分钟都会白拉一次全量。
-  const headerMode = (response.headers.get('x-catalog-mode') || '').toLowerCase()
-  const mode: 'live' | 'snapshot' = headerMode === 'snapshot' ? 'snapshot' : 'live'
-  const meta = metaFromCatalog(catalog, mode)
-  const syncedAt = response.headers.get('x-catalog-synced-at')
-  if (syncedAt) meta.syncedAt = syncedAt
+  const mode = catalogModeFromHeader(response.headers.get('x-catalog-mode'))
+  const meta = metaFromCatalog(catalog, mode, response.headers.get('x-catalog-synced-at'))
   return { catalog, meta }
 }
 
@@ -235,29 +207,16 @@ async function checkForUpdate(reason: 'poll' | 'focus' | 'online' | 'manual') {
   }
 
   try {
-    const meta = await fetchJson<CatalogMeta>('/api/catalog/meta', { cache: 'no-store' }, META_TIMEOUT_MS)
-    if (!meta || typeof meta !== 'object') return
-    const version = normalizeVersion(meta.version)
-    const previousVersion = snapshot.meta ? snapshot.meta.version : -1
-    const mode: 'live' | 'snapshot' = meta.mode === 'snapshot' ? 'snapshot' : 'live'
-    const previousMode: 'live' | 'snapshot' = snapshot.meta?.mode ?? 'live'
-    const modeChanged = mode !== previousMode
+    const payload = await fetchJson<unknown>('/api/catalog/meta', { cache: 'no-store' }, META_TIMEOUT_MS)
     // 快照模式说明后端没有可用数据库，曲库不会在运行期变化：只更新元信息，
     // 不能因为「快照里的 version 与 meta 接口的 0 不相等」就每 5 分钟重拉一次 484 KB。
-    if (modeChanged || (mode === 'live' && version !== previousVersion)) {
+    const decision = decideUpdate(snapshot.meta, payload)
+    if (decision.action === 'ignore') return
+    if (decision.action === 'reload') {
       await loadCatalog(true)
       return
     }
-    publish({
-      meta: {
-        ...(snapshot.meta as CatalogMeta),
-        ...meta,
-        version,
-        mode,
-        stale: Boolean(meta.stale),
-        lastError: String(meta.lastError || ''),
-      },
-    })
+    publish({ meta: { ...(snapshot.meta as CatalogMeta), ...decision.meta } })
   } catch {
     // 后端不可用（纯静态托管 / 离线）：静默保留当前曲库
   }
@@ -300,18 +259,9 @@ export function refreshCatalog(): Promise<RefreshResult> {
         body: '{}',
         signal: AbortSignal.timeout(MANUAL_TIMEOUT_MS),
       })
-      if (response.status === 429) {
-        note = '官方接口刚查过，请稍后再试'
-      } else if (!response.ok) {
-        const payload = (await response.json().catch(() => null)) as { error?: string } | null
-        note = String(payload?.error || `同步接口返回 ${response.status}`)
-      } else {
-        const payload = (await response.json().catch(() => null)) as
-          | { ok?: boolean; error?: string; warnings?: string[] }
-          | null
-        if (payload && payload.ok === false) note = String(payload.error || '后端同步失败')
-        else if (payload?.warnings?.length) note = `部分专辑暂未更新（${payload.warnings.length} 条）`
-      }
+      // 429 时不读正文（后端只回了限流说明，没必要再解析一次）
+      const payload = response.status === 429 ? null : await response.json().catch(() => null)
+      note = noteForSyncResponse(response.status, payload)
     } catch {
       // 后端没有同步接口（纯静态托管）或超时：下面照常重拉，能拿到多少算多少
     }

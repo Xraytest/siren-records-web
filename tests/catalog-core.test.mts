@@ -91,7 +91,11 @@ function makeFetch(routes: Record<string, unknown>) {
     const raw = routes[path]
     const value = typeof raw === 'function' ? (raw as () => unknown)() : raw
     if (value instanceof Error) throw value
-    return new Response(JSON.stringify({ code: 0, data: value }), { status: 200 })
+    // 与真实官方接口一致：成功响应带 application/json（fetchOfficialJson 会校验 Content-Type）
+    return new Response(JSON.stringify({ code: 0, data: value }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
   }
   return { fetchImpl, calls }
 }
@@ -257,7 +261,9 @@ test('fetchOfficialJson：网络抖动会重试，成功一次就返回 data', a
     fetchImpl: async () => {
       attempts += 1
       if (attempts < 3) throw new Error('ECONNRESET')
-      return new Response(JSON.stringify({ code: 0, data: { ok: 1 } }))
+      return new Response(JSON.stringify({ code: 0, data: { ok: 1 } }), {
+        headers: { 'content-type': 'application/json' },
+      })
     },
   })
   assert.deepEqual(data, { ok: 1 })
@@ -269,7 +275,10 @@ test('fetchOfficialJson：code 非 0 视为失败', async () => {
     fetchOfficialJson('/api/album/xxxx/detail', {
       attempts: 1,
       retryDelayMs: 1,
-      fetchImpl: async () => new Response(JSON.stringify({ code: 104, msg: '找不到专辑' })),
+      fetchImpl: async () =>
+        new Response(JSON.stringify({ code: 104, msg: '找不到专辑' }), {
+          headers: { 'content-type': 'application/json' },
+        }),
     }),
     /104/,
   )
@@ -583,6 +592,129 @@ test('syncCatalog：部分专辑失败时标记 partial 并把告警落到 meta'
   assert.ok(result.warnings.some((warning: string) => warning.includes('0002')))
   assert.ok(String(meta.lastWarning).includes('0002'))
   assert.equal(meta.lastWarningAt, new Date(NOW).toISOString())
+})
+
+test('syncCatalog：续租失败立刻中止整轮，已落库的部分保留、错误字段不被改写', async () => {
+  const { store, albums, meta } = makeStore()
+  const write = store.putAlbums.bind(store)
+  const stolen = `${NOW + 9_999_999}|another-run`
+  store.putAlbums = async (rows: Row[]) => {
+    await write(rows)
+    // 模拟：本轮跑到一半租约到期，被另一个实例抢走
+    meta.leaseUntil = stolen
+  }
+  const { fetchImpl } = makeFetch({
+    '/api/albums': [listEntry('0001', 'A')],
+    '/api/album/0001/detail': detail('0001', 'A', ['s1']),
+    '/api/song/s1': { name: 'A-s1', artists: ['MSR'], sourceUrl: 'https://cdn/s1.mp3', lyricUrl: '' },
+  })
+
+  // keepLease 只在真实墙钟距上次续租 ≥30_000ms 时才调用 renewLease；测试全程毫秒级完成，
+  // 不推时钟的话这条防线永远不会被触发（r4-01 的原始漏洞）。
+  const realNow = Date.now
+  let fake = NOW
+  Date.now = () => (fake += 31_000)
+  try {
+    const result = await syncCatalog({
+      store,
+      fetchImpl,
+      now: NOW,
+      reason: 'test',
+      http: HTTP,
+      budgets: { refresh: 1 },
+      bootstrap: async () => seedFromBaseline(store, baselineOf(), NOW),
+    })
+
+    assert.equal(result.ok, true, '被接管不算失败：本轮已落库的部分照常生效')
+    assert.equal(result.skipped, 'lease-lost')
+    // 中止发生在收尾 setMeta 之前：版本号与错误字段都不能被这轮改写
+    assert.equal(Number(meta.version), 1)
+    assert.equal(meta.lastError, '')
+    assert.equal(meta.lastErrorAt, '')
+    assert.equal(meta.leaseUntil, stolen, 'releaseLease 只应清掉自己的租约')
+    // 中止点落在逐曲续租上：铺底已经写进去的两张必须原样留着，不许被回滚
+    assert.equal(albums.size, 2)
+    assert.equal(albums.get('0001')?.songCount, 1)
+    assert.equal(albums.get('0002')?.songCount, 1)
+  } finally {
+    Date.now = realNow
+  }
+})
+
+test('syncCatalog：确认轮超过单轮上限（11 张）时继续挂起，不执行删除', async () => {
+  const known = Array.from({ length: 44 }, (_, index) =>
+    album(String(index + 1).padStart(4, '0'), `A${index + 1}`, [`s${index + 1}`]),
+  )
+  const missing = known.slice(33).map((item) => item.cid)
+  const official = known.slice(0, 33).map((item) => listEntry(item.cid, item.name))
+  const { store, albums, meta } = makeStore()
+  let deleteCalls = 0
+  store.deleteAlbums = async (cids: string[]) => {
+    deleteCalls += 1
+    for (const cid of cids) albums.delete(cid)
+  }
+  const { fetchImpl } = makeFetch({ '/api/albums': official })
+  const baseline = { generatedAt: '2026-10-22T16:05:44.515Z', source: OFFICIAL, albums: known }
+  const options = { store, fetchImpl, reason: 'test', http: HTTP, budgets: { refresh: 0 } }
+
+  const first = await syncCatalog({
+    ...options,
+    now: NOW,
+    bootstrap: async () => seedFromBaseline(store, baseline, NOW),
+  })
+  assert.equal(first.ok, true)
+  // 44 张里缺 11 张：比例闸放行（11 = ceil(44*0.25)），但棘轮闸不放行（11 > 10）
+  assert.equal(first.removed, 0)
+  assert.equal(first.removedPending, 11)
+  assert.ok(first.warnings.some((warning: string) => warning.includes('超过单轮上限')))
+  assert.equal(deleteCalls, 0)
+  assert.equal(albums.size, 44)
+  assert.deepEqual(JSON.parse(String(meta.pendingRemoval)), missing)
+
+  // 第二轮：同一批缺失已确认过，但 11 > MAX_REMOVALS_PER_RUN，仍然不许删
+  const second = await syncCatalog({ ...options, now: NOW + 120_000 })
+  assert.equal(second.ok, true)
+  assert.equal(second.removed, 0)
+  assert.equal(second.removedPending, 11)
+  assert.ok(second.warnings.some((warning: string) => warning.includes('超过单轮上限')))
+  assert.equal(deleteCalls, 0)
+  assert.equal(albums.size, 44)
+  assert.deepEqual(JSON.parse(String(meta.pendingRemoval)), missing)
+})
+
+test('syncCatalog：确认轮正好等于单轮上限（10 张）时照常删除', async () => {
+  const known = Array.from({ length: 40 }, (_, index) =>
+    album(String(index + 1).padStart(4, '0'), `A${index + 1}`, [`s${index + 1}`]),
+  )
+  const missing = known.slice(30).map((item) => item.cid)
+  const official = known.slice(0, 30).map((item) => listEntry(item.cid, item.name))
+  const { store, albums, meta } = makeStore()
+  let deleted: string[] = []
+  store.deleteAlbums = async (cids: string[]) => {
+    deleted = deleted.concat(cids)
+    for (const cid of cids) albums.delete(cid)
+  }
+  const { fetchImpl } = makeFetch({ '/api/albums': official })
+  const baseline = { generatedAt: '2026-10-22T16:05:44.515Z', source: OFFICIAL, albums: known }
+  const options = { store, fetchImpl, reason: 'test', http: HTTP, budgets: { refresh: 0 } }
+
+  const first = await syncCatalog({
+    ...options,
+    now: NOW,
+    bootstrap: async () => seedFromBaseline(store, baseline, NOW),
+  })
+  assert.equal(first.removed, 0)
+  assert.equal(first.removedPending, 10)
+  assert.ok(first.warnings.some((warning: string) => warning.includes('需下一轮再次确认')))
+  assert.equal(albums.size, 40)
+
+  const second = await syncCatalog({ ...options, now: NOW + 120_000 })
+  assert.equal(second.ok, true)
+  assert.equal(second.removed, 10)
+  assert.equal(second.removedPending, 0)
+  assert.deepEqual(deleted.sort(), missing.slice().sort())
+  assert.equal(albums.size, 30)
+  assert.deepEqual(JSON.parse(String(meta.pendingRemoval)), [])
 })
 
 test('matchesEtag：弱比较、列表与 * 都要命中', () => {

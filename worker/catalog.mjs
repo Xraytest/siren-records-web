@@ -404,6 +404,7 @@ async function readMetaPayload(env) {
 let lastLazyAttemptAt = 0
 
 function maybeTriggerSync(env, ctx, meta) {
+  if (!env?.DB) return
   if (!ctx?.waitUntil || !meta) return
   if (!meta.stale) return
   const now = Date.now()
@@ -470,8 +471,21 @@ export async function handleCatalog(request, env, ctx, url) {
         return jsonResponse(429, { error: '同步过于频繁，请稍后再试' })
       }
       lastManualAt = now
-      const result = await runSync(env, { reason: 'manual' })
-      return jsonResponse(result.ok ? 200 : 502, result)
+      // 先响应后执行：手动同步动辄几十秒（300+ 张专辑滚动复查），同步等待会让前端
+      // 30 秒超时直接报错，而同步本身还在后台继续。响应 202 只代表「已开始」，
+      // 结果以随后的 /api/catalog 轮询为准（前端 refreshCatalog 本来就会无条件重拉）。
+      ctx.waitUntil(
+        runSync(env, { reason: 'manual' })
+          .then((result) => {
+            if (result && !result.ok) console.error('[siren] 曲库手动同步失败', result.error)
+            else if (result?.warnings?.length) console.warn('[siren] 曲库手动同步部分失败', result.warnings.slice(0, 3))
+            else console.log(`[siren] 曲库手动同步完成 v${result?.version}（+${result?.added} 专辑）`)
+          })
+          .catch((error) => {
+            console.error('[siren] 曲库手动同步异常', error)
+          }),
+      )
+      return jsonResponse(202, { started: true, reason: 'manual', checkedAt: new Date().toISOString() })
     }
 
     return jsonResponse(404, { error: '接口不存在' })

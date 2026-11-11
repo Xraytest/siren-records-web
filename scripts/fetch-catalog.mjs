@@ -157,13 +157,15 @@ async function main() {
         belong: a.detail.belong || '',
         coverUrl: a.detail.coverUrl || a.coverUrl,
         coverDeUrl: a.detail.coverDeUrl || '',
-        artistes: a.detail.artistes || a.artistes || [],
+        /* 空数组也是 truthy：详情里偶发的空 artistes 不能覆盖列表接口给的名单 */
+        artistes: a.detail.artistes?.length ? a.detail.artistes : a.artistes?.length ? a.artistes : [],
         songs: (a.detail.songs || []).map((s) => {
           const info = songData[s.cid];
           return {
             cid: s.cid,
             name: s.name,
-            artistes: (info?.artists || s.artistes || []).join(' / '),
+            /* 与 buildAlbum 同规：空 artists 不能覆盖详情/上一级来源 */
+            artistes: (info?.artists?.length ? info.artists : s.artistes?.length ? s.artistes : []).join(' / '),
             albumCid: a.cid,
             albumName: a.name,
             albumCover: a.detail.coverUrl || a.coverUrl,
